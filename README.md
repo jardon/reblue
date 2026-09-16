@@ -6,7 +6,8 @@
 </h1>
 
 > [!IMPORTANT]
-> re:Blue is an unofficial project
+> re:Blue is an unofficial project and contains NO ASSETS from the original game.
+> This project is useless unless you have a legal backup of the ISO images from the Global release (US/EU, Asia/JP support coming soon).
 
 
 # re:Blue
@@ -96,9 +97,9 @@ Everything below is new to re:Blue. All of it is configurable in game, from the 
 
 ### Platforms and Languages
 
-- Windows on DX12 or Vulkan
+- Windows on DX12 (Vulkan support is available if built from source)
 - Linux AMD64 and ARM64, including the Steam Deck and other handhelds
-- macOS AMD64 and ARM64
+- macOS ARM64 (AMD64 support is available if built from source)
 - Custom menus in English, French, German, Italian, and Spanish
 
 ## FAQ
