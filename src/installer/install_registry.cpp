@@ -7,8 +7,6 @@
  */
 #include "installer/install_registry.h"
 
-#include <string_view>
-
 #include <rex/types.h>
 
 #include "core/build_info.h"
@@ -43,19 +41,6 @@ namespace bd::installer {
 namespace {
 
 constexpr wchar_t kInstallKey[] = L"Software\\Zolaware\\reblue\\Install";
-
-// How Renderer is spelled in the store. Anything else is a record from before
-// the field existed, which means D3D12.
-constexpr const char *kRendererD3D12 = "dx12";
-constexpr const char *kRendererVulkan = "vulkan";
-
-const char *Serialize(Renderer renderer) {
-  return renderer == Renderer::Vulkan ? kRendererVulkan : kRendererD3D12;
-}
-
-Renderer Deserialize(std::string_view text) {
-  return text == kRendererVulkan ? Renderer::Vulkan : Renderer::D3D12;
-}
 
 std::optional<std::wstring> ReadString(HKEY key, const wchar_t *name) {
   DWORD type = 0;
@@ -121,9 +106,6 @@ std::optional<InstallConfig> ReadInstallRegistry() {
     }
   }
 
-  if (auto r = ReadString(key, L"Renderer"))
-    cfg.renderer = Deserialize(bd::WideToUtf8(*r));
-
   if (auto v = ReadString(key, L"AppVersion"))
     cfg.app_version = bd::WideToUtf8(*v);
   Migrate(cfg);
@@ -162,8 +144,6 @@ bool WriteInstallRegistry(const InstallConfig &config) {
       ok &= WriteString(
           key, (L"Disc" + std::to_wstring(i + 1) + L"Fingerprint").c_str(),
           bd::Utf8ToWide(config.iso_fingerprints[i]));
-    ok &= WriteString(key, L"Renderer",
-                      bd::Utf8ToWide(Serialize(config.renderer)));
     ok &= WriteString(key, L"SchemaVersion",
                       std::to_wstring(kInstallSchemaVersion));
     ok &= WriteString(key, L"AppVersion",

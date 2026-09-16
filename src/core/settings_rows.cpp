@@ -22,7 +22,6 @@
 #include "audio/audio.h"
 #include "engine/engine.h"
 #include "gpu/gpu.h"
-#include "installer/installer.h"
 #include "ui/ui.h"
 
 namespace bd {
@@ -263,13 +262,6 @@ constexpr SettingOption kShadowQuality[] = {
     {.text = "2x", .num = 2.0, .num2 = 2048},
     {.text = "3x", .num = 3.0, .num2 = 4096},
     {.text = "4x", .num = 4.0, .num2 = 8192}};
-constexpr SettingOption kRenderer[] = {
-    {.text = "DX12",
-     .num = 0,
-     .key = installer::ToString(installer::Renderer::D3D12)},
-    {.text = "Vulkan",
-     .num = 1,
-     .key = installer::ToString(installer::Renderer::Vulkan)}};
 // Quality Preset row: "Custom" (index kPresetCustom) is a read-only state
 // shown when the current settings match no bundle, never a selectable target.
 // Keys come from gpu::ToString so this row and the installer's tier buttons
@@ -613,15 +605,6 @@ constexpr SettingRow kDisplaySettings[] = {
 };
 
 constexpr SettingRow kGraphicsSettings[] = {
-    {.label = "settings.graphics.backend.label",
-     .group = "menu.header.renderer",
-     .binding = {
-         .get = [] { return static_cast<double>(CurrentRenderer()); },
-         .set = [](double v) { return ApplyRenderer(static_cast<int>(v)); }},
-     .options = kRenderer,
-     .count = OptCount(kRenderer),
-     .restart = true,
-     .hidden = [] { return !RendererChoiceAvailable(); }},
     {.label = "settings.graphics.quality_preset.label",
      .group = "menu.header.preset",
      .binding = {.get =

@@ -84,7 +84,6 @@ InstallerWizard::InstallerWizard(
   if (existing) {
     for (int i = 0; i < kDiscCount; ++i)
       discs_[i].fingerprint = existing->iso_fingerprints[i];
-    renderer_ = existing->renderer;
   }
 
   InitDLCCatalog();
@@ -108,7 +107,6 @@ void InstallerWizard::Finish(bool completed) {
   cfg.install_root = std::filesystem::absolute(install_dir_);
   for (int i = 0; i < kDiscCount; ++i)
     cfg.iso_fingerprints[i] = discs_[i].fingerprint;
-  cfg.renderer = renderer_;
 
   BD_INFO("InstallerWizard: finished, completed={}", completed);
 
@@ -570,15 +568,6 @@ void InstallerWizard::DrawOptions() {
 
   SectionHeader(T("installer.section.display"));
   if (BeginRows("##display_rows")) {
-    // The wizard holds the backend itself: it goes in the install record, and
-    // on a fresh install there is no record for the config row to write to.
-    if (bd::RendererChoiceAvailable()) {
-      OptionRow(
-          T("settings.graphics.backend.label"), bd::RendererCount(),
-          static_cast<int>(renderer_),
-          [](int i) { return bd::RendererName(i); }, nullptr,
-          [this](int i) { renderer_ = static_cast<Renderer>(i); });
-    }
     DrawSettingRow(SettingsPage::Display,
                    "settings.display.display_mode.label");
     DrawSettingRow(SettingsPage::Display, "settings.display.resolution.label");

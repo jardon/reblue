@@ -64,50 +64,11 @@ REXCVAR_DEFINE_STRING(
     "data location for config, saves, and DLC toggles. Set by the launcher.")
     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
 
-#if defined(_WIN32)
-REXCVAR_DEFINE_STRING(
-    backend, "", "reblue",
-    "Force a graphics backend for this run, 'd3d12' or 'vulkan'. Starts the "
-    "sibling executable when it names the other one and never touches the "
-    "saved choice. Empty runs the backend this executable was built for.")
-    .allowed({"d3d12", "vulkan"})
-    .lifecycle(rex::cvar::Lifecycle::kInitOnly);
-#endif
-
 namespace {
 
 #if defined(_WIN32)
 std::filesystem::path ProgramDir() {
   return rex::filesystem::GetExecutablePath().parent_path();
-}
-
-// True once the sibling has taken over and this process should quit. One hop:
-// the exe it starts is the one that was asked for, so it hands off to nobody.
-// Only a deliberate act reaches here, an explicit --backend or the one the
-// wizard just picked, because a plain launch runs the backend it was built for.
-bool HandOffRenderer(bd::installer::Renderer wanted,
-                     const std::filesystem::path &directory) {
-  if (wanted == bd::installer::kBuiltRenderer)
-    return false;
-  const auto sibling = directory / bd::installer::RendererExecutable(wanted);
-  std::error_code ec;
-  if (std::filesystem::exists(sibling, ec) &&
-      bd::platform::SpawnReplacement(sibling, false))
-    return true;
-  BD_WARN("[backend] {} unavailable, staying on this renderer",
-          sibling.filename().string());
-  return false;
-}
-
-// The backend named on the command line. The cvar's allowed list has already
-// turned anything but these two away, leaving empty for the usual case of not
-// asking for one.
-std::optional<bd::installer::Renderer> RequestedBackend() {
-  const std::string_view name = REXCVAR_GET(backend);
-  if (name.empty())
-    return std::nullopt;
-  return name == "vulkan" ? bd::installer::Renderer::Vulkan
-                          : bd::installer::Renderer::D3D12;
 }
 #endif
 
@@ -374,7 +335,8 @@ void ReblueApp::OnConfigureStyle(ImGuiStyle &imgui_style,
 }
 
 void ReblueApp::OnCreateDialogs(rex::ui::ImGuiDrawer *drawer) {
-  window()->SetTitle("re:Blue v" REBLUE_VERSION_STRING " " REXGLUE_BUILD_TITLE);
+  window()->SetTitle(std::string("re:Blue v" REBLUE_VERSION_STRING " (") +
+                     bd::gpu::Video::BackendName() + ")");
   bd::platform::Keyboard().Attach(window());
   bd::platform::Mouse().Attach(window());
 
@@ -428,8 +390,7 @@ void ReblueApp::OnCreateDialogs(rex::ui::ImGuiDrawer *drawer) {
   // on the UI thread, where the kernel state is reachable (mirrors OnClosing).
   bd::platform::SetWarmRebootHandler([this] {
     app_context().CallInUIThreadDeferred([] {
-      bd::platform::PerformWarmReboot(&bd::QuiesceForExit,
-                                      bd::RendererRestartTarget());
+      bd::platform::PerformWarmReboot(&bd::QuiesceForExit);
     });
   });
 }
@@ -518,19 +479,6 @@ void ReblueApp::OnConfigurePaths(rex::PathConfig &paths) {
       app_context().QuitFromUIThread();
       return;
     }
-  }
-#endif
-
-#if defined(_WIN32)
-  // Before any device exists: the exe that keeps the session is the one that
-  // creates one. An explicit --backend is the only thing that starts the
-  // other executable, and it starts the one next to this exe: what a plain
-  // launch runs is the backend it was built for, so a build-dir exe stays the
-  // process under the debugger.
-  if (const auto wanted = RequestedBackend();
-      wanted && HandOffRenderer(*wanted, program_dir)) {
-    app_context().QuitFromUIThread();
-    return;
   }
 #endif
 }
@@ -858,27 +806,22 @@ void ReblueApp::FinishInstaller(rex::PathConfig defaults,
   if (choices.create_shortcut) {
     std::string shortcut_error;
     if (!bd::platform::CreateDesktopShortcut(
-            install_root_ / bd::installer::RendererExecutable(cfg.renderer),
-            "re:Blue", shortcut_error))
+            install_root_ / bd::installer::kGameExecutable, "re:Blue",
+            shortcut_error))
       BD_WARN("Could not create the desktop shortcut: {}", shortcut_error);
   }
 
-  // What boots the game is the exe sitting in the install directory built for
-  // the backend that was picked, which is not always this one and not always
-  // here. Everything above has to be written before the hand-off: what starts
-  // next reads it back.
+  // What boots the game is the exe sitting in the install directory, which is
+  // not always here. Everything above has to be written before the hand-off:
+  // what starts next reads it back.
   if (ProgramDir() != install_root_) {
-    const char *exe = bd::installer::RendererExecutable(cfg.renderer);
+    const char *exe = bd::installer::kGameExecutable;
     if (!bd::platform::SpawnReplacement(install_root_ / exe, false)) {
       bd::platform::ShowFatalError("Install finished, could not start it",
                                    std::string("The game is installed. Run ") +
                                        exe + " from\n" +
                                        install_root_.string());
     }
-    app_context().QuitFromUIThread();
-    return;
-  }
-  if (HandOffRenderer(cfg.renderer, install_root_)) {
     app_context().QuitFromUIThread();
     return;
   }

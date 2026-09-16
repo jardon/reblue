@@ -27,39 +27,9 @@ constexpr int kInstallSchemaVersion = 3;
 // long.
 inline constexpr int kDiscCount = 3;
 
-// Windows alone ships one executable per backend, so it is the only platform
-// that records a choice, offers one, or acts on one. Absent reads as D3D12.
-enum class Renderer : u32 {
-  D3D12 = 0,
-  Vulkan = 1,
-};
-inline constexpr u32 kRendererCount = 2;
-
-// Catalog keys, so the menu and the installer label a backend from one place.
-constexpr const char *ToString(Renderer renderer) {
-  switch (renderer) {
-  case Renderer::D3D12:
-    return "opt.renderer.d3d12";
-  case Renderer::Vulkan:
-    return "opt.renderer.vulkan";
-  }
-  return "";
-}
-
 #if defined(_WIN32)
-constexpr const char *RendererExecutable(Renderer renderer) {
-  return renderer == Renderer::Vulkan ? "reblue_vk.exe" : "reblue.exe";
-}
-#endif
-
-// The backend this executable was built for, and so the one it runs: a plain
-// launch never starts the other exe. Windows ships one per backend, every
-// other platform is Vulkan.
-constexpr Renderer kBuiltRenderer =
-#if defined(REBLUE_D3D12)
-    Renderer::D3D12;
-#else
-    Renderer::Vulkan;
+// The executable the shortcut and the post-install start point at.
+inline constexpr const char *kGameExecutable = "reblue.exe";
 #endif
 
 struct InstallConfig {
@@ -68,7 +38,6 @@ struct InstallConfig {
   std::array<std::string, kDiscCount> iso_fingerprints;
   int schema_version =
       0; // registry SchemaVersion, 0 if absent (pre-schema install)
-  Renderer renderer = Renderer::D3D12;
   // REBLUE_VERSION_STRING of the build that wrote this record, stamped by
   // WriteInstallRegistry. Empty on a record written before it was recorded.
   std::string app_version;

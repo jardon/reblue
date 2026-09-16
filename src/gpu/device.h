@@ -171,6 +171,9 @@ public:
 
   static std::string GetDeviceName();
 
+  // "D3D12" / "Vulkan", known before any device exists.
+  static const char *BackendName();
+
   // "D3D12 12_2" / "Vulkan 1.3.294". Empty until the device is up.
   static const std::string &GetBackendInfo();
 

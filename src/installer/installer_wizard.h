@@ -135,9 +135,6 @@ private:
   std::string install_status_;
 
   WizardChoices choices_;
-  // Recorded in the install registry, not the profile config: the exe reads it
-  // before any config is loaded.
-  Renderer renderer_ = Renderer::D3D12;
   // Checkbox state, seeded from the live settings.
   bool update_check_ = false;
   bool create_shortcut_ = false;

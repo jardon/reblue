@@ -132,22 +132,6 @@ bool CreateDesktopShortcut(const std::filesystem::path &target,
   return WriteShortcut(target, shortcut_path, error);
 }
 
-bool RetargetDesktopShortcut(const std::filesystem::path &target,
-                             std::string_view name, std::string &error) {
-  const ComScope com;
-  if (!com) {
-    error = "CoInitializeEx failed";
-    return false;
-  }
-  std::filesystem::path shortcut_path;
-  if (!DesktopShortcutPath(name, shortcut_path, error))
-    return false;
-  std::error_code ec;
-  if (!std::filesystem::exists(shortcut_path, ec))
-    return true;
-  return WriteShortcut(target, shortcut_path, error);
-}
-
 } // namespace bd::platform
 
 #else
@@ -156,12 +140,6 @@ namespace bd::platform {
 
 bool CreateDesktopShortcut(const std::filesystem::path &, std::string_view,
                            std::string &error) {
-  error = "Desktop shortcuts are not supported on this platform";
-  return false;
-}
-
-bool RetargetDesktopShortcut(const std::filesystem::path &, std::string_view,
-                             std::string &error) {
   error = "Desktop shortcuts are not supported on this platform";
   return false;
 }

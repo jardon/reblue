@@ -836,6 +836,14 @@ std::string Video::GetDeviceName() {
   return s.device ? s.device->getDescription().name : std::string("unknown");
 }
 
+const char *Video::BackendName() {
+#if defined(REBLUE_D3D12)
+  return "D3D12";
+#else
+  return "Vulkan";
+#endif
+}
+
 const std::string &Video::GetBackendInfo() { return state().backend_info; }
 
 plume::RenderPipelineLayout *Video::MainPipelineLayout() {

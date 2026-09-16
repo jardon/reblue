@@ -10,7 +10,6 @@
 #pragma once
 
 #include <cstddef>
-#include <filesystem>
 #include <string>
 
 namespace bd {
@@ -38,19 +37,6 @@ enum class RowUi : int {
 };
 
 enum class SettingAction { None, Keybinds, PadLayout, MechatLayout };
-
-// The backend the next launch renders through, for the Graphics page's
-// "Rendering Backend" row and the installer's buttons. It lives in the install
-// record, not the profile config: the exe reads it before any config loads.
-bool RendererChoiceAvailable();
-int RendererCount();
-const char *RendererName(int renderer);
-int CurrentRenderer();
-bool ApplyRenderer(int renderer);
-
-// The executable a restart should start so the chosen backend is the one that
-// comes back: the sibling built for it, or empty when that is this executable.
-std::filesystem::path RendererRestartTarget();
 
 const char *SettingsPageLabel(SettingsPage page);
 
