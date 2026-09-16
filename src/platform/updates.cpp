@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <fstream>
+#include <span>
 #include <thread>
 #include <vector>
 
@@ -20,6 +21,7 @@
 #include "core/app_root.h"
 #include "core/build_info.h"
 #include "core/logging.h"
+#include "core/program_files.h"
 #include "core/settings.h"
 #include "platform/appimage_update.h"
 #include "platform/content_sync.h"
@@ -308,6 +310,7 @@ Updates::ApplyResult Updates::Apply(const std::filesystem::path &install_root) {
     fs::remove_all(staging, ec);
     return ApplyResult::kUnpackFailed;
   }
+  fs::remove_all(zip.parent_path(), ec);
   BD_INFO("v{} staged, installs on the next launch", manifest->app_version);
   return ApplyResult::kStaged;
 #endif
@@ -374,6 +377,29 @@ void WriteReplacedList(const fs::path &path,
   std::ofstream list(path, std::ios::binary);
   for (const auto &rel : entries)
     list << rel << "\n";
+}
+
+void RetireFiles(const fs::path &install_root,
+                 std::span<const char *const> names,
+                 const std::vector<std::string> &kept,
+                 std::vector<std::string> &replaced) {
+  std::error_code ec;
+  for (const char *rel : names) {
+    if (std::find(kept.begin(), kept.end(), rel) != kept.end())
+      continue;
+    const auto dst = install_root / rel;
+    if (!fs::exists(dst, ec))
+      continue;
+    const auto aside = dst.native() + kReplacedSuffix;
+    fs::remove(aside, ec);
+    fs::rename(dst, aside, ec);
+    if (ec) {
+      BD_WARN("Could not retire {}: {}", rel, ec.message());
+      continue;
+    }
+    if (std::find(replaced.begin(), replaced.end(), rel) == replaced.end())
+      replaced.emplace_back(rel);
+  }
 }
 
 } // namespace
@@ -455,6 +481,10 @@ bool InstallStagedUpdate(const fs::path &install_root) {
     }
   }
 
+  std::vector<std::string> staged_names;
+  for (const auto &rel : files)
+    staged_names.push_back(rel.generic_string());
+  RetireFiles(install_root, kProgramFiles, staged_names, replaced);
   WriteReplacedList(install_root / kReplacedList, replaced);
   fs::remove_all(staging, ec);
   BD_INFO("Installed the staged update into {}", install_root.string());
@@ -463,7 +493,8 @@ bool InstallStagedUpdate(const fs::path &install_root) {
 
 void ClearReplacedFiles(const fs::path &install_root) {
   const auto list_path = install_root / kReplacedList;
-  const auto entries = ReadReplacedList(list_path);
+  auto entries = ReadReplacedList(list_path);
+  RetireFiles(install_root, kRetiredFiles, {}, entries);
   if (entries.empty())
     return;
 
