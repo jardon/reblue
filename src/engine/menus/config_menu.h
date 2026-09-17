@@ -15,6 +15,7 @@
 #include <array>
 #include <initializer_list>
 #include <string>
+#include <vector>
 
 #include <rex/ppc/func.h>
 #include <rex/types.h>
@@ -35,6 +36,11 @@ public:
     SECTION,             // section sidebar active
     MODLIST,             // mod list active, detail panel visible
     DLCLIST,             // DLC list active, detail panel visible
+    LANGLIST,
+    LANGADD,
+    LANGPICK,
+    LANGJOB,
+    LANGNOTICE,
     ACHVLIST,            // achievement list active (read-only)
     SETTINGS,            // a settings page list active, sidebar stays visible
     KEYBINDS,            // keyboard-binds screen (reached from the Input page)
@@ -112,6 +118,11 @@ private:
   void HandleSection();
   void HandleModlist();
   void HandleDLCList();
+  void HandleLangList();
+  void HandleLangAdd();
+  void HandleLangPick();
+  void HandleLangJob();
+  void HandleLangNotice();
   void HandleAchvlist();
   void HandleSettings();
   // Sets the row's value from where the pointer sits along it: the button it
@@ -130,6 +141,8 @@ private:
 
   void UpdateDetailPanel(int cursor);
   void UpdateDLCDetail(int cursor);
+  void UpdateLanguageDetail(int index);
+  void ShowLanguageNotice(const std::string &text);
   void HideDetailPanel();
   void HideDLCDetail();
   void UpdateFooter();
@@ -149,9 +162,9 @@ private:
   AnimeMenu &CurrentSettingsList();
 
   // Every list widget this menu owns: the section sidebar, the mod, DLC,
-  // achievement and keybind lists, plus one list per settings page. All point
-  // at members, so the array is rebuilt per call rather than cached.
-  static constexpr size_t kFixedMenus = 5;
+  // language, achievement and keybind lists, plus one list per settings page.
+  // All point at members, so the array is rebuilt per call rather than cached.
+  static constexpr size_t kFixedMenus = 6;
   static constexpr size_t kMenuCount = kSettingsSectionCount + kFixedMenus;
   std::array<AnimeMenu *, kMenuCount> Menus();
 
@@ -173,6 +186,7 @@ private:
   AnimeMenu section_menu_;
   AnimeMenu modlist_menu_;
   AnimeMenu dlclist_menu_;
+  AnimeMenu langlist_menu_;
   AnimeMenu achvlist_menu_;
   AnimeMenu settings_menus_[kSettingsSectionCount];
   AnimeMenu keybind_menu_;
@@ -206,8 +220,15 @@ private:
   D2AnimeCursor cursor_;
   int reorder_origin_ = -1;
   int delete_index_ = -1;
-  bool delete_is_dlc_ = false;
+  enum class DeleteKind { Mod, DLC, Language };
+  static const char *DeleteKindName(DeleteKind kind);
+  DeleteKind delete_kind_ = DeleteKind::Mod;
+  std::string lang_prompt_;
+  std::string lang_notice_;
+  int lang_pick_ = 0;
+  std::vector<bool> lang_accept_;
   SysMesConfirm confirm_popup_;
+  SysMesNotice notice_popup_;
 };
 
 } // namespace bd::engine

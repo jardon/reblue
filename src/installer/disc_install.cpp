@@ -14,7 +14,6 @@
 #include <rex/system/xcontent.h>
 
 #include <array>
-#include <cctype>
 #include <fstream>
 #include <map>
 #include <set>
@@ -27,6 +26,7 @@
 #include "core/logging.h"
 #include "core/xcontent.h"
 #include "embedded.h"
+#include "installer/boot_languages.h"
 #include "vfs/vfs.h"
 
 namespace bd::installer {
@@ -37,37 +37,6 @@ namespace {
 
 std::string DiscMarker(int disc_number) {
   return "bd_disc_" + std::to_string(disc_number) + ".xml";
-}
-
-constexpr std::array<std::string_view, 10> kKnownLangCodes = {
-    "us", "jp", "de", "fr", "es", "it", "kr", "tw", "cn", "po"};
-
-bool IsKnownLang(std::string_view code) {
-  for (auto known : kKnownLangCodes) {
-    if (known == code)
-      return true;
-  }
-  return false;
-}
-
-void AddLangCodes(std::string_view rest, std::set<std::string> &dst) {
-  size_t p = 0;
-  while (p < rest.size()) {
-    while (p < rest.size() && std::isspace(static_cast<unsigned char>(rest[p])))
-      ++p;
-    size_t q = p;
-    while (q < rest.size() &&
-           !std::isspace(static_cast<unsigned char>(rest[q])))
-      ++q;
-    if (q > p) {
-      std::string token(rest.substr(p, q - p));
-      for (auto &ch : token)
-        ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
-      if (IsKnownLang(token))
-        dst.insert(token);
-    }
-    p = q;
-  }
 }
 
 } // namespace
@@ -82,36 +51,6 @@ std::string DiscFingerprint(size_t content_size, rex::filesystem::Entry &root,
   if (auto *entry = root.ResolvePath(DiscMarker(disc_number)); entry != nullptr)
     marker_size = entry->size();
   return std::to_string(content_size) + ":" + std::to_string(marker_size);
-}
-
-std::set<std::string> ParseDiscLanguages(rex::filesystem::Entry &root) {
-  std::set<std::string> out;
-
-  auto *entry = root.ResolvePath("bd_boot.ini");
-  if (!entry)
-    return out;
-  const std::string text = ReadEntry(*entry);
-
-  size_t start = 0;
-  for (size_t i = 0; i <= text.size(); ++i) {
-    if (i != text.size() && text[i] != '\n')
-      continue;
-    std::string_view line = std::string_view(text).substr(start, i - start);
-    start = i + 1;
-    if (!line.empty() && line.back() == '\r')
-      line.remove_suffix(1);
-
-    if (line.find("[Language]") == std::string_view::npos &&
-        line.find("[Voice]") == std::string_view::npos &&
-        line.find("[BGM]") == std::string_view::npos)
-      continue;
-
-    const size_t rb = line.find(']');
-    if (rb == std::string_view::npos)
-      continue;
-    AddLangCodes(line.substr(rb + 1), out);
-  }
-  return out;
 }
 
 DiscImage::DiscImage(std::unique_ptr<rex::filesystem::Device> device,
@@ -233,33 +172,266 @@ bool IsDamagedIPK(const std::string &relative_path, const fs::path &file) {
          std::string_view(magic, sizeof(magic)) != kIPKMagic;
 }
 
+using DiscRoots = std::array<rex::filesystem::Entry *, kDiscCount>;
+
+bool OpenRoots(const std::array<fs::path, kDiscCount> &sources,
+               std::map<fs::path, std::unique_ptr<DiscImage>> &images,
+               DiscRoots &roots, InstallProgress &progress) {
+  for (int i = 0; i < kDiscCount; ++i) {
+    auto &image = images[sources[i]];
+    if (!image)
+      image = DiscImage::Open(sources[i]);
+    if (image)
+      roots[i] = image->Root(i + 1);
+    if (!roots[i]) {
+      progress.SetError(i18n::Fmt("installer.error.open_source",
+                                  sources[i].filename().string(), i + 1));
+      progress.failed.store(true);
+      return false;
+    }
+  }
+  return true;
+}
+
+struct Selected {
+  std::set<std::string> text;
+  std::set<std::string> voice;
+  bool movies = true;
+
+  std::set<std::string> Codes() const {
+    std::set<std::string> out(text.begin(), text.end());
+    out.insert(voice.begin(), voice.end());
+    return out;
+  }
+};
+
+Selected Resolve(const InstallSelection &selection) {
+  Selected out;
+  out.movies = selection.movies;
+  for (const auto &lang : selection.languages) {
+    if (lang.text)
+      out.text.insert(lang.code);
+    if (lang.voice)
+      out.voice.insert(lang.code);
+  }
+  return out;
+}
+
+std::string ForwardSlashes(const std::string &path) {
+  std::string out = path;
+  for (auto &ch : out) {
+    if (ch == '\\')
+      ch = '/';
+  }
+  return out;
+}
+
+constexpr std::string_view kMovieDirs[] = {"movie/", "map/movie/"};
+constexpr std::string_view kPackPrefix = "pack/packmem_";
+constexpr std::string_view kVoiceDirs[] = {"snd_memory_", "snd_stream_"};
+
+bool IsMovieRow(const std::string &path) {
+  const std::string norm = ForwardSlashes(path);
+  for (auto dir : kMovieDirs) {
+    if (norm.rfind(dir, 0) == 0)
+      return true;
+  }
+  return false;
+}
+
+bool Wanted(const std::string &path, const Selected &selection) {
+  const std::string norm = ForwardSlashes(path);
+
+  for (auto dir : kMovieDirs) {
+    if (norm.rfind(dir, 0) == 0)
+      return selection.movies;
+  }
+
+  if (norm.rfind(kPackPrefix, 0) == 0 && norm.ends_with(kIPKExt)) {
+    const size_t start = kPackPrefix.size();
+    const size_t len = norm.size() - start - kIPKExt.size();
+    return selection.text.count(norm.substr(start, len)) != 0;
+  }
+
+  const std::string head = norm.substr(0, norm.find('/'));
+  for (auto dir : kVoiceDirs) {
+    if (head.rfind(dir, 0) == 0)
+      return selection.voice.count(head.substr(dir.size())) != 0;
+  }
+
+  return true;
+}
+
+struct PlanItem {
+  std::string path;
+  rex::filesystem::Entry *entry;
+  size_t size;
+  bool needs_copy;
+};
+
+struct InstallPlan {
+  fs::path dest;
+  bool skip_present = false;
+
+  std::vector<PlanItem> items;
+  size_t total_bytes = 0;
+  size_t hits_per_disc[kDiscCount] = {};
+  std::set<std::string> seen_lang;
+
+  bool WillCopy(const std::string &path, rex::filesystem::Entry *entry) const {
+    if (!entry)
+      return false;
+    if (!skip_present)
+      return true;
+    std::error_code ec;
+    const auto present = dest / fs::path(path);
+    if (!fs::exists(present, ec) || fs::file_size(present, ec) != entry->size())
+      return true;
+    return IsDamagedIPK(path, present);
+  }
+
+  void Add(const std::string &path, rex::filesystem::Entry *entry, int disc,
+           bool force = false) {
+    const size_t size = entry ? entry->size() : 0;
+    const bool needs_copy = force ? entry != nullptr : WillCopy(path, entry);
+    if (needs_copy)
+      total_bytes += size;
+    if (disc >= 0)
+      ++hits_per_disc[disc];
+    items.push_back({path, entry, size, needs_copy});
+  }
+
+  void AddMovies(const DiscRoots &roots,
+                 const std::vector<std::string> &manifest) {
+    for (const auto &path : manifest) {
+      if (IsUnsafePath(path) || !IsMovieRow(path))
+        continue;
+      for (int di = 0; di < kDiscCount; ++di) {
+        auto *e = roots[di]->ResolvePath(path);
+        if (e == nullptr)
+          continue;
+        Add(path, e, di, true);
+        break;
+      }
+    }
+  }
+
+  void AddLanguage(const DiscRoots &roots, const std::string &lang, bool text,
+                   bool voice) {
+    const std::string packmem = "pack/packmem_" + lang + ".ipk";
+    const std::string lang_dirs[] = {"snd_memory_" + lang,
+                                     "snd_stream_" + lang};
+    for (int di = 0; di < kDiscCount; ++di) {
+      auto *root = roots[di];
+
+      if (text) {
+        if (auto *e = root->ResolvePath(packmem);
+            e != nullptr && seen_lang.insert(packmem).second) {
+          Add(packmem, e, di);
+        }
+      }
+
+      if (!voice)
+        continue;
+
+      for (const auto &dir_name : lang_dirs) {
+        auto *d = root->ResolvePath(dir_name);
+        if (d == nullptr ||
+            !(d->attributes() & rex::filesystem::kFileAttributeDirectory)) {
+          continue;
+        }
+        std::vector<std::pair<std::string, rex::filesystem::Entry *>> files;
+        CollectDiscFiles(d, dir_name, files);
+        for (auto &[rel, entry] : files) {
+          if (!seen_lang.insert(rel).second)
+            continue;
+          Add(rel, entry, di);
+        }
+      }
+    }
+  }
+};
+
+bool RunCopyLoop(const InstallPlan &plan, const fs::path &game_data_dest,
+                 InstallProgress &progress, size_t &skipped) {
+  for (const auto &item : plan.items) {
+    if (progress.canceled.load())
+      break;
+    if (progress.failed.load())
+      break;
+
+    if (!item.needs_copy) {
+      if (item.entry != nullptr)
+        ++skipped;
+      progress.files_done.fetch_add(1);
+      continue;
+    }
+
+    progress.SetCurrentFile(item.path);
+
+    const auto dest_path = game_data_dest / fs::path(item.path);
+    if (!ExtractOne(item.entry, dest_path, progress))
+      return false;
+
+    if (IsDamagedIPK(item.path, dest_path)) {
+      BD_ERROR("Damaged archive on the install source: {}", item.path);
+      progress.SetError(i18n::Fmt("installer.error.damaged_source", item.path));
+      progress.failed.store(true);
+      return false;
+    }
+
+    progress.files_done.fetch_add(1);
+    progress.bytes_done.fetch_add(item.size);
+  }
+
+  return !progress.failed.load() && !progress.canceled.load();
+}
+
+BootLanguages DiscUnion(const DiscRoots &roots) {
+  BootLanguages out = BootLanguages::FromDisc(*roots[0]);
+  for (int i = 1; i < kDiscCount; ++i) {
+    const BootLanguages other = BootLanguages::FromDisc(*roots[i]);
+    out.Add(other, other.All());
+  }
+  return out;
+}
+
+bool FlushBootIni(const BootLanguages &langs, const fs::path &game_data_dest,
+                  InstallProgress &progress) {
+  const auto ini_path = game_data_dest / "bd_boot.ini";
+  if (langs.Flush(ini_path))
+    return true;
+  BD_ERROR("Failed to update '{}'", ini_path.string());
+  progress.SetError(i18n::Fmt("installer.error.boot_ini", ini_path.string()));
+  progress.failed.store(true);
+  return false;
+}
+
+void RebuildPackIndex(const fs::path &game_data_dest,
+                      InstallProgress &progress) {
+  progress.SetCurrentFile("pack index");
+  vfs::VFS::BuildPackIndex(game_data_dest,
+                           bd::CacheRootFor(game_data_dest.parent_path()));
+}
+
 } // namespace
 
 std::thread
 Installer::RunAsync(const std::array<fs::path, kDiscCount> &sources,
                     const fs::path &game_data_dest, bool repair,
+                    const InstallSelection &selection,
                     InstallProgress &progress) {
-  return std::thread([sources, game_data_dest, repair, &progress]() {
+  return std::thread([sources, game_data_dest, repair, selection, &progress]() {
     std::map<fs::path, std::unique_ptr<DiscImage>> images;
-    std::array<rex::filesystem::Entry *, kDiscCount> roots{};
-    for (int i = 0; i < kDiscCount; ++i) {
-      auto &image = images[sources[i]];
-      if (!image)
-        image = DiscImage::Open(sources[i]);
-      if (image)
-        roots[i] = image->Root(i + 1);
-      if (!roots[i]) {
-        progress.SetError(i18n::Fmt("installer.error.open_source",
-                                    sources[i].filename().string(), i + 1));
-        progress.failed.store(true);
-        progress.complete.store(true);
-        return;
-      }
+    DiscRoots roots{};
+    if (!OpenRoots(sources, images, roots, progress)) {
+      progress.complete.store(true);
+      return;
     }
 
     std::set<std::string> available;
     for (auto *root : roots) {
-      const std::set<std::string> langs = ParseDiscLanguages(*root);
+      const std::set<std::string> langs = BootLanguages::FromDisc(*root).All();
       available.insert(langs.begin(), langs.end());
     }
     if (available.empty())
@@ -271,6 +443,22 @@ Installer::RunAsync(const std::array<fs::path, kDiscCount> &sources,
       BD_INFO("Installer: languages available on discs: {}", joined);
     }
 
+    Selected chosen = Resolve(selection);
+    if (chosen.text.empty() && chosen.voice.empty()) {
+      chosen.text = available;
+      chosen.voice = available;
+    }
+    {
+      std::string text_list;
+      for (const auto &l : chosen.text)
+        text_list += l + " ";
+      std::string voice_list;
+      for (const auto &l : chosen.voice)
+        voice_list += l + " ";
+      BD_INFO("Installer: text [{}], voice [{}], movies {}", text_list,
+              voice_list, chosen.movies ? "yes" : "no");
+    }
+
     const auto manifest = LoadManifest();
     if (manifest.empty()) {
       progress.SetError(i18n::Text("installer.error.manifest_missing"));
@@ -279,30 +467,12 @@ Installer::RunAsync(const std::array<fs::path, kDiscCount> &sources,
       return;
     }
 
-    struct PlanItem {
-      std::string path;
-      rex::filesystem::Entry *entry;
-      size_t size;
-      bool needs_copy;
-    };
-    std::vector<PlanItem> plan;
-    plan.reserve(manifest.size());
-    size_t total_bytes = 0;
+    InstallPlan plan;
+    plan.dest = game_data_dest;
+    plan.skip_present = repair;
+    plan.items.reserve(manifest.size());
     size_t missing = 0;
-    size_t hits_per_disc[kDiscCount] = {};
 
-    auto will_copy = [&](const std::string &path,
-                         rex::filesystem::Entry *entry) -> bool {
-      if (!entry)
-        return false;
-      if (!repair)
-        return true;
-      std::error_code ec;
-      const auto dest = game_data_dest / fs::path(path);
-      if (!fs::exists(dest, ec) || fs::file_size(dest, ec) != entry->size())
-        return true;
-      return IsDamagedIPK(path, dest);
-    };
     for (const auto &path : manifest) {
       if (IsUnsafePath(path)) {
         BD_ERROR("Manifest contains unsafe path: {}", path);
@@ -311,110 +481,55 @@ Installer::RunAsync(const std::array<fs::path, kDiscCount> &sources,
         progress.complete.store(true);
         return;
       }
+      if (!Wanted(path, chosen))
+        continue;
       rex::filesystem::Entry *entry = nullptr;
-      for (size_t i = 0; i < roots.size(); ++i) {
+      int disc = -1;
+      for (int i = 0; i < kDiscCount; ++i) {
         if (auto *e = roots[i]->ResolvePath(path); e != nullptr) {
           entry = e;
-          ++hits_per_disc[i];
+          disc = i;
           break;
         }
       }
-      const size_t size = entry ? entry->size() : 0;
       if (!entry) {
         BD_WARN("MISSING: {} (not on any disc)", path);
         ++missing;
       }
-      const bool needs_copy = will_copy(path, entry);
-      if (needs_copy)
-        total_bytes += size;
-      plan.push_back({path, entry, size, needs_copy});
+      plan.Add(path, entry, disc);
     }
 
-    std::set<std::string> seen_lang;
     for (const auto &lang : available) {
-      const std::string packmem = "pack/packmem_" + lang + ".ipk";
-      const std::string lang_dirs[] = {"snd_memory_" + lang,
-                                       "snd_stream_" + lang};
-      for (size_t di = 0; di < roots.size(); ++di) {
-        auto *root = roots[di];
-
-        if (auto *e = root->ResolvePath(packmem);
-            e != nullptr && seen_lang.insert(packmem).second) {
-          const bool needs_copy = will_copy(packmem, e);
-          if (needs_copy)
-            total_bytes += e->size();
-          plan.push_back({packmem, e, e->size(), needs_copy});
-          ++hits_per_disc[di];
-        }
-
-        for (const auto &dir_name : lang_dirs) {
-          auto *d = root->ResolvePath(dir_name);
-          if (d == nullptr ||
-              !(d->attributes() & rex::filesystem::kFileAttributeDirectory)) {
-            continue;
-          }
-          std::vector<std::pair<std::string, rex::filesystem::Entry *>> files;
-          CollectDiscFiles(d, dir_name, files);
-          for (auto &[rel, entry] : files) {
-            if (!seen_lang.insert(rel).second)
-              continue;
-            const bool needs_copy = will_copy(rel, entry);
-            if (needs_copy)
-              total_bytes += entry->size();
-            plan.push_back({rel, entry, entry->size(), needs_copy});
-            ++hits_per_disc[di];
-          }
-        }
-      }
+      const bool text = chosen.text.count(lang) != 0;
+      const bool voice = chosen.voice.count(lang) != 0;
+      if (text || voice)
+        plan.AddLanguage(roots, lang, text, voice);
     }
 
-    progress.files_total.store(plan.size());
-    progress.bytes_total.store(total_bytes);
+    progress.files_total.store(plan.items.size());
+    progress.bytes_total.store(plan.total_bytes);
 
     BD_INFO("Install plan ({}): {} files, {} bytes to copy",
-            repair ? "repair" : "full", plan.size(), total_bytes);
+            repair ? "repair" : "full", plan.items.size(), plan.total_bytes);
     BD_INFO("  DVD1: {} files, DVD2: {} files, DVD3: {} files, missing: {}",
-            hits_per_disc[0], hits_per_disc[1], hits_per_disc[2], missing);
+            plan.hits_per_disc[0], plan.hits_per_disc[1], plan.hits_per_disc[2],
+            missing);
 
     std::error_code ec;
     fs::create_directories(game_data_dest, ec);
 
     size_t skipped = 0;
-    for (const auto &item : plan) {
-      if (progress.canceled.load())
-        break;
-      if (progress.failed.load())
-        break;
-
-      if (!item.needs_copy) {
-        if (item.entry != nullptr)
-          ++skipped;
-        progress.files_done.fetch_add(1);
-        continue;
-      }
-
-      progress.SetCurrentFile(item.path);
-
-      const auto dest_path = game_data_dest / fs::path(item.path);
-      if (!ExtractOne(item.entry, dest_path, progress)) {
-        progress.complete.store(true);
-        return;
-      }
-
-      if (IsDamagedIPK(item.path, dest_path)) {
-        BD_ERROR("Damaged archive on the install source: {}", item.path);
-        progress.SetError(
-            i18n::Fmt("installer.error.damaged_source", item.path));
-        progress.failed.store(true);
-        progress.complete.store(true);
-        return;
-      }
-
-      progress.files_done.fetch_add(1);
-      progress.bytes_done.fetch_add(item.size);
+    if (!RunCopyLoop(plan, game_data_dest, progress, skipped)) {
+      progress.complete.store(true);
+      return;
     }
 
-    if (progress.failed.load() || progress.canceled.load()) {
+    const BootLanguages disc = DiscUnion(roots);
+    BootLanguages installed = disc;
+    installed.Keep(chosen.text, chosen.voice);
+    installed.SetMovie(chosen.movies ? disc.Voice()
+                                     : std::vector<std::string>());
+    if (!FlushBootIni(installed, game_data_dest, progress)) {
       progress.complete.store(true);
       return;
     }
@@ -431,9 +546,7 @@ Installer::RunAsync(const std::array<fs::path, kDiscCount> &sources,
       return;
     }
 
-    progress.SetCurrentFile("pack index");
-    vfs::VFS::BuildPackIndex(game_data_dest,
-                             bd::CacheRootFor(game_data_dest.parent_path()));
+    RebuildPackIndex(game_data_dest, progress);
 
     if (repair) {
       BD_INFO("Repair complete: {} files already present, {} missing on discs.",
@@ -441,6 +554,133 @@ Installer::RunAsync(const std::array<fs::path, kDiscCount> &sources,
     } else {
       BD_INFO("Installation complete ({} files missing - see log).", missing);
     }
+    progress.complete.store(true);
+  });
+}
+
+std::thread Installer::AddLanguagesAsync(
+    const std::array<fs::path, kDiscCount> &sources,
+    const fs::path &game_data_dest, const InstallSelection &selection,
+    InstallProgress &progress) {
+  return std::thread([sources, game_data_dest, selection, &progress]() {
+    std::map<fs::path, std::unique_ptr<DiscImage>> images;
+    DiscRoots roots{};
+    if (!OpenRoots(sources, images, roots, progress)) {
+      progress.complete.store(true);
+      return;
+    }
+
+    const Selected chosen = Resolve(selection);
+
+    InstallPlan plan;
+    plan.dest = game_data_dest;
+    plan.skip_present = true;
+    for (const auto &lang : selection.languages) {
+      if (lang.text || lang.voice)
+        plan.AddLanguage(roots, lang.code, lang.text, lang.voice);
+    }
+    if (chosen.movies) {
+      const auto manifest = LoadManifest();
+      if (manifest.empty()) {
+        progress.SetError(i18n::Text("installer.error.manifest_missing"));
+        progress.failed.store(true);
+        progress.complete.store(true);
+        return;
+      }
+      plan.AddMovies(roots, manifest);
+    }
+
+    progress.files_total.store(plan.items.size());
+    progress.bytes_total.store(plan.total_bytes);
+
+    std::string joined;
+    for (const auto &lang : selection.languages) {
+      if (!lang.text && !lang.voice)
+        continue;
+      if (!joined.empty())
+        joined += ' ';
+      joined += lang.code;
+      if (!lang.voice)
+        joined += "(text)";
+      else if (!lang.text)
+        joined += "(voice)";
+    }
+    if (chosen.movies) {
+      if (!joined.empty())
+        joined += ' ';
+      joined += "movies";
+    }
+    BD_INFO("Language install plan: {} ({} files, {} bytes to copy)", joined,
+            plan.items.size(), plan.total_bytes);
+
+    size_t skipped = 0;
+    if (!RunCopyLoop(plan, game_data_dest, progress, skipped)) {
+      progress.complete.store(true);
+      return;
+    }
+
+    BootLanguages installed =
+        BootLanguages::FromFile(game_data_dest / "bd_boot.ini");
+    const BootLanguages disc = DiscUnion(roots);
+    BootLanguages picked = disc;
+    picked.Keep(chosen.text, chosen.voice);
+    installed.Add(picked, chosen.Codes());
+    if (chosen.movies)
+      installed.SetMovie(disc.Voice());
+    if (!FlushBootIni(installed, game_data_dest, progress)) {
+      progress.complete.store(true);
+      return;
+    }
+
+    RebuildPackIndex(game_data_dest, progress);
+
+    BD_INFO("Language install complete: {}", joined);
+    progress.complete.store(true);
+  });
+}
+
+std::thread Installer::RemoveLanguageAsync(const fs::path &game_data_dest,
+                                           const std::string &lang,
+                                           InstallProgress &progress) {
+  return std::thread([game_data_dest, lang, &progress]() {
+    const std::array<fs::path, 3> targets = {
+        game_data_dest / "pack" / ("packmem_" + lang + ".ipk"),
+        game_data_dest / ("snd_memory_" + lang),
+        game_data_dest / ("snd_stream_" + lang)};
+
+    progress.files_total.store(targets.size());
+
+    for (const auto &target : targets) {
+      progress.SetCurrentFile(target.filename().string());
+
+      std::error_code probe;
+      std::error_code ec;
+      if (fs::is_directory(target, probe))
+        fs::remove_all(target, ec);
+      else
+        fs::remove(target, ec);
+
+      if (ec) {
+        BD_ERROR("Failed to delete '{}': {}", target.string(), ec.message());
+        progress.SetError(ec.message());
+        progress.failed.store(true);
+        progress.complete.store(true);
+        return;
+      }
+      progress.files_done.fetch_add(1);
+    }
+
+    BootLanguages installed =
+        BootLanguages::FromFile(game_data_dest / "bd_boot.ini");
+    installed.Remove(lang);
+    if (!FlushBootIni(installed, game_data_dest, progress)) {
+      progress.complete.store(true);
+      return;
+    }
+
+    RebuildPackIndex(game_data_dest, progress);
+
+    BD_INFO("Language removal complete: {}", lang);
     progress.complete.store(true);
   });
 }

@@ -115,6 +115,8 @@ bool SysMesConfirm::Confirmed() const {
   return task_.Confirmed() && SelectedAnswer() == 0;
 }
 
+bool SysMesConfirm::Canceled() const { return task_.Canceled(); }
+
 int SysMesConfirm::SelectedAnswer() const {
   const CommandSelectTask select = task_.CommandSelect();
   if (!select)

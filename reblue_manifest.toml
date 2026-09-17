@@ -17,6 +17,7 @@ includes = [
   "config/hooks/hud_anchor.toml",
   "config/hooks/hud_fade.toml",
   "config/hooks/iss_event.toml",
+  "config/hooks/language.toml",
   "config/hooks/loader.toml",
   "config/hooks/mouse_cursor.toml",
   "config/hooks/output_resolution.toml",

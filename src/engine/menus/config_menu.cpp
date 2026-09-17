@@ -31,9 +31,9 @@
 namespace bd::engine {
 
 std::array<AnimeMenu *, ConfigMenu::kMenuCount> ConfigMenu::Menus() {
-  std::array<AnimeMenu *, kMenuCount> all = {&section_menu_, &modlist_menu_,
-                                             &dlclist_menu_, &achvlist_menu_,
-                                             &keybind_menu_};
+  std::array<AnimeMenu *, kMenuCount> all = {
+      &section_menu_,  &modlist_menu_, &dlclist_menu_,
+      &langlist_menu_, &achvlist_menu_, &keybind_menu_};
   for (int p = 0; p < kSettingsSectionCount; ++p)
     all[kFixedMenus + p] = &settings_menus_[p];
   return all;
@@ -57,6 +57,17 @@ void ConfigMenu::ShowOnly(std::initializer_list<AnimeMenu *> visible) {
                          visible.end());
 }
 
+const char *ConfigMenu::DeleteKindName(DeleteKind kind) {
+  switch (kind) {
+  case DeleteKind::DLC:
+    return "dlc";
+  case DeleteKind::Language:
+    return "language";
+  default:
+    return "mod";
+  }
+}
+
 ConfigMenu::State ConfigMenu::SectionState(int cursor) const {
   if (cursor >= 0 && cursor < kSettingsSectionCount)
     return State::SETTINGS;
@@ -67,6 +78,8 @@ ConfigMenu::State ConfigMenu::SectionState(int cursor) const {
     return State::MODLIST;
   if (cursor == kSettingsSectionCount + 1)
     return State::DLCLIST;
+  if (cursor == kSettingsSectionCount + 2)
+    return State::LANGLIST;
   return State::ACHVLIST;
 }
 
@@ -84,6 +97,12 @@ AnimeMenu *ConfigMenu::ContentMenu() {
     return &modlist_menu_;
   case State::DLCLIST:
     return &dlclist_menu_;
+  case State::LANGLIST:
+  case State::LANGADD:
+  case State::LANGPICK:
+  case State::LANGJOB:
+  case State::LANGNOTICE:
+    return &langlist_menu_;
   case State::ACHVLIST:
     return &achvlist_menu_;
   default:
@@ -108,6 +127,9 @@ void ConfigMenu::SyncPreview(int cursor) {
     break;
   case State::DLCLIST:
     SetHeaders("", i18n::Text("menu.header.dlc"), "");
+    break;
+  case State::LANGLIST:
+    SetHeaders("", i18n::Text("menu.header.languages"), "");
     break;
   case State::ACHVLIST:
     SetHeaders("", i18n::Text("menu.header.achievements"), "");
@@ -134,6 +156,13 @@ void ConfigMenu::ApplyVisibility() {
     break;
   case State::DLCLIST:
     ShowOnly({&section_menu_, &dlclist_menu_});
+    break;
+  case State::LANGLIST:
+  case State::LANGADD:
+  case State::LANGPICK:
+  case State::LANGJOB:
+  case State::LANGNOTICE:
+    ShowOnly({&section_menu_, &langlist_menu_});
     break;
   case State::ACHVLIST:
     ShowOnly({&section_menu_, &achvlist_menu_});
@@ -222,6 +251,7 @@ void ConfigMenu::Create(Task parent, Surface surface, PPCFunc *parentUpdate) {
   // A previous life's popup died with its parent's task tree, the handle must
   // not carry into this one.
   confirm_popup_.Drop();
+  notice_popup_.Drop();
 
   // TaskBase__ctor sets the structural parent. The notification link is what
   // TitleTask_OnChildComplete fires on, so only the title surface wires it:
@@ -250,6 +280,7 @@ void ConfigMenu::Create(Task parent, Surface surface, PPCFunc *parentUpdate) {
 
 void ConfigMenu::Destroy() {
   MenuMouse::Get().SetRowFilter(nullptr);
+  CancelLanguageJob();
 
   if (dirty_) {
     SaveAndReload();
@@ -271,6 +302,7 @@ void ConfigMenu::Destroy() {
   // A live popup is a child of task_ and dies with it, so drop the handle
   // without Kill() so no DEAD flag write reaches freed engine memory later.
   confirm_popup_.Drop();
+  notice_popup_.Drop();
   ResetMenus();
 
   if (!wants_restart_)
@@ -295,6 +327,7 @@ void ConfigMenu::Dismiss() {
 
   // A forced close can reach here from any state, popup up and a list active.
   confirm_popup_.Kill();
+  notice_popup_.Kill();
   for (auto *m : Menus())
     m->SetActive(false);
   if (task_)
@@ -331,6 +364,7 @@ bool ConfigMenu::DiscoverMenus() {
   section_menu_ = task_.FindMenu("SltSection");
   modlist_menu_ = task_.FindMenu("ModList");
   dlclist_menu_ = task_.FindMenu("DlcList");
+  langlist_menu_ = task_.FindMenu("LangList");
   achvlist_menu_ = task_.FindMenu("AchvList");
   for (int p = 0; p < kSettingsSectionCount; ++p)
     settings_menus_[p] = task_.FindMenu(ConfigLayout::kSettingsListNames[p]);
@@ -343,6 +377,7 @@ bool ConfigMenu::DiscoverMenus() {
 
   modlist_menu_.SeedEntries(ModCount());
   dlclist_menu_.SeedEntries(DlcCount());
+  langlist_menu_.SeedEntries(LanguageCount());
   achvlist_menu_.SeedEntries(GetAchievementList().size());
   for (int p = 0; p < kSettingsSectionCount; ++p)
     settings_menus_[p].SeedEntries(
@@ -376,7 +411,8 @@ void ConfigMenu::Transition(State next) {
         else if (next == State::KEYBINDS || next == State::PADLAYOUT ||
             next == State::KEYBIND_CAPTURE || next == State::REORDER ||
             next == State::CONFIRM_DELETE || next == State::CONFIRM_REBOOT ||
-            next == State::CONFIRM_RESET_BINDS) {
+            next == State::CONFIRM_RESET_BINDS || next == State::LANGADD ||
+            next == State::LANGPICK) {
             sfx::Play(sfx::kOpen);
         }
     }
@@ -399,6 +435,17 @@ void ConfigMenu::Transition(State next) {
   case State::DLCLIST:
     dlclist_menu_.SetActive(false);
     HideDLCDetail();
+    break;
+  case State::LANGLIST:
+    langlist_menu_.SetActive(false);
+    break;
+  case State::LANGADD:
+  case State::LANGPICK:
+    confirm_popup_.Kill();
+    break;
+  case State::LANGJOB:
+  case State::LANGNOTICE:
+    notice_popup_.Kill();
     break;
   case State::ACHVLIST:
     achvlist_menu_.SetActive(false);
@@ -497,6 +544,65 @@ void ConfigMenu::Transition(State next) {
     BD_DEBUG("[config] state -> DLCLIST");
     break;
 
+  case State::LANGLIST:
+    HideDetailPanel();
+    HideDLCDetail();
+    if (LanguageCount() == 0) {
+      langlist_menu_.SetActive(false);
+      SetHeaders("", "", "");
+    } else {
+      open(langlist_menu_);
+      SetHeaders("", i18n::Text("menu.header.languages"),
+                 i18n::Text("menu.header.details"));
+    }
+    PopulateNames();
+    UpdateLanguageDetail(langlist_menu_.CursorIndex());
+    BD_DEBUG("[config] state -> LANGLIST ({} installed)", LanguageCount());
+    break;
+
+  case State::LANGADD: {
+    const bool first = lang_prompt_.empty();
+    const std::string q1 =
+        first ? i18n::Text("menu.language.add_ask")
+              : i18n::Fmt("menu.language.missing_discs", lang_prompt_);
+    const std::string q2 = first ? i18n::Text("menu.language.add_discs")
+                                 : i18n::Text("menu.language.missing_ask");
+    confirm_popup_.Create(task_, q1.c_str(), q2.c_str(), "", nullptr, nullptr,
+                          0);
+    ActivateOnly(nullptr);
+    BD_DEBUG("[config] state -> LANGADD (missing \"{}\")", lang_prompt_);
+    break;
+  }
+
+  case State::LANGPICK: {
+    const int offers = static_cast<int>(LanguageOfferCount());
+    const bool movies = lang_pick_ >= offers;
+    const std::string q1 =
+        movies ? i18n::Text("menu.language.movies_ask")
+               : i18n::Fmt("menu.language.add_one",
+                           LanguageOfferName(lang_pick_));
+    const std::string q2 = movies ? LanguageOfferMovies()
+                                  : LanguageOfferKinds(lang_pick_);
+    confirm_popup_.Create(task_, q1.c_str(), q2.c_str(), "", nullptr, nullptr,
+                          0);
+    ActivateOnly(nullptr);
+    BD_DEBUG("[config] state -> LANGPICK ({} of {})", lang_pick_, offers);
+    break;
+  }
+
+  case State::LANGJOB:
+    SetHeaders("", i18n::Text("menu.header.languages"),
+               i18n::Text("menu.header.details"));
+    ActivateOnly(nullptr);
+    BD_DEBUG("[config] state -> LANGJOB");
+    break;
+
+  case State::LANGNOTICE:
+    ShowLanguageNotice(lang_notice_);
+    ActivateOnly(nullptr);
+    BD_DEBUG("[config] state -> LANGNOTICE (\"{}\")", lang_notice_);
+    break;
+
   case State::ACHVLIST: {
     RefreshAchievementList();
     open(achvlist_menu_);
@@ -571,18 +677,25 @@ void ConfigMenu::Transition(State next) {
 
   case State::CONFIRM_DELETE: {
     std::string name;
-    if (delete_is_dlc_) {
+    switch (delete_kind_) {
+    case DeleteKind::DLC: {
       auto &dlc = DLC();
       if (delete_index_ < static_cast<int>(dlc.Count()))
         name = dlc.At(static_cast<size_t>(delete_index_)).display_name;
-    } else {
+      break;
+    }
+    case DeleteKind::Language:
+      name = LanguageName(delete_index_);
+      break;
+    case DeleteKind::Mod:
       name = ModAt(delete_index_).name;
+      break;
     }
     confirm_popup_.Create(task_, i18n::Fmt("menu.confirm.delete", name).c_str(),
                           i18n::Text("menu.confirm.undone").c_str());
     ActivateOnly(nullptr);
     BD_DEBUG("[config] state -> CONFIRM_DELETE ({}[{}] \"{}\")",
-             delete_is_dlc_ ? "dlc" : "mod", delete_index_, name);
+             DeleteKindName(delete_kind_), delete_index_, name);
     break;
   }
 
@@ -630,6 +743,9 @@ void ConfigMenu::EnforceActiveFlags() {
   case State::DLCLIST:
     ActivateOnly(DlcCount() > 0 ? &dlclist_menu_ : nullptr);
     break;
+  case State::LANGLIST:
+    ActivateOnly(LanguageCount() > 0 ? &langlist_menu_ : nullptr);
+    break;
   case State::ACHVLIST:
     ActivateOnly(&achvlist_menu_);
     break;
@@ -641,6 +757,10 @@ void ConfigMenu::EnforceActiveFlags() {
     break;
   case State::KEYBIND_CAPTURE:
   case State::PADLAYOUT:
+  case State::LANGADD:
+  case State::LANGPICK:
+  case State::LANGJOB:
+  case State::LANGNOTICE:
   case State::CONFIRM_DELETE:
   case State::CONFIRM_REBOOT:
   case State::CONFIRM_RESET_BINDS:
@@ -743,6 +863,20 @@ void ConfigMenu::Update(PPCContext &ctx, u8 *base) {
     RefreshDLCVisuals();
     cursor_.Poll(dlclist_menu_, DlcCount(), [&](int c) { UpdateDLCDetail(c); });
     break;
+  case State::LANGLIST:
+    cursor_.Poll(langlist_menu_, LanguageCount(), [&](int c) {
+      UpdateLanguageDetail(c);
+      UpdateFooter();
+    });
+    break;
+  case State::LANGJOB:
+    ShowLanguageNotice(LanguageJobStatus());
+    if (const int percent = LanguageJobPercent(); percent >= 0)
+      SetRowDesc(i18n::Fmt("menu.language.progress", percent));
+    break;
+  case State::LANGNOTICE:
+    ShowLanguageNotice(lang_notice_);
+    break;
   case State::ACHVLIST:
     RefreshAchvVisuals();
     cursor_.Poll(achvlist_menu_, [&](int c) { UpdateAchvRowDesc(c); });
@@ -777,6 +911,21 @@ void ConfigMenu::Update(PPCContext &ctx, u8 *base) {
     break;
   case State::DLCLIST:
     HandleDLCList();
+    break;
+  case State::LANGLIST:
+    HandleLangList();
+    break;
+  case State::LANGADD:
+    HandleLangAdd();
+    break;
+  case State::LANGPICK:
+    HandleLangPick();
+    break;
+  case State::LANGJOB:
+    HandleLangJob();
+    break;
+  case State::LANGNOTICE:
+    HandleLangNotice();
     break;
   case State::ACHVLIST:
     HandleAchvlist();

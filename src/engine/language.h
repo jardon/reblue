@@ -67,6 +67,7 @@ public:
   // VoiceType numbers this list from one, so VoiceLocale takes it that way.
   i32 VoiceCount() const;
   Locale VoiceLocale(i32 voiceType) const;
+  i32 MovieVoiceType(i32 voiceType) const;
 };
 
 } // namespace bd::engine

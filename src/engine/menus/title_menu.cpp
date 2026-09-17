@@ -14,6 +14,7 @@
 #include "engine/d2anime/anime_mouse.h"
 #include "engine/d2anime/d2anime.h"
 #include "engine/game.h"
+#include "engine/game_options.h"
 #include "engine/menus/config_menu.h"
 #include "engine/menus/config_menu_data.h"
 #include "engine/menus/title_task.h"
@@ -62,6 +63,7 @@ constexpr float kTextCursorOffset = 16.0f;
 // The title task's state.
 constexpr u32 kTitleStateMenu = 2; // navigable row list
 constexpr u32 kTitleStateChildRunning = 4;
+constexpr u32 kTitleStateVoicePick = 7;
 
 bd::engine::ConfigMenu s_config_menu;
 bool s_create_config = false;
@@ -467,6 +469,11 @@ REX_HOOK_RAW(TitleTask_Update) {
 
       NavigateNoSaveMenu(title);
       HoverTitleRows(title);
+      if (title.State() == kTitleStateVoicePick) {
+        const i32 voice = bd::engine::GameOptions::Get().VoiceType();
+        if (voice >= 1)
+          title.SetVoicePick(static_cast<u32>(voice - 1));
+      }
       __imp__TitleTask_Update(ctx, base);
     }
   }

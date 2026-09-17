@@ -11,6 +11,7 @@
 #include <stb_image.h>
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 #include <functional>
 
@@ -21,14 +22,13 @@
 #include "core/settings.h"
 #include "core/settings_model.h"
 #include "embedded.h"
+#include "installer/boot_languages.h"
 #include "platform/platform.h"
 #include "ui/ui.h"
 #include "vfs/vfs.h"
 
 namespace bd::installer {
 namespace {
-const char *kDiscLabels[kDiscCount] = {"DVD 1", "DVD 2", "DVD 3"};
-
 constexpr ImVec4 kLit(0.30f, 0.90f, 0.30f, 1.0f);
 constexpr ImVec4 kDim(0.32f, 0.34f, 0.40f, 1.0f);
 constexpr ImVec4 kStatus(0.90f, 0.70f, 0.30f, 1.0f);
@@ -40,6 +40,33 @@ void Join(std::string &list, const char *item) {
 }
 
 const char *T(const char *key) { return i18n::Text(key).c_str(); }
+
+constexpr const char *kRequiredLang = "us";
+
+bool HasCode(const std::vector<std::string> &list, const std::string &code) {
+  return std::find(list.begin(), list.end(), code) != list.end();
+}
+
+std::string UpperJoin(const std::vector<std::string> &codes) {
+  std::string out;
+  for (const auto &code : codes) {
+    if (!out.empty())
+      out += ", ";
+    for (char ch : code)
+      out += static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+  }
+  return out;
+}
+
+std::string LanguageName(const std::string &code) {
+  const std::string &name = i18n::Text("locale." + code);
+  if (!name.empty() && name.front() != '#')
+    return name;
+  std::string upper;
+  for (char ch : code)
+    upper += static_cast<char>(std::toupper(static_cast<unsigned char>(ch)));
+  return upper;
+}
 
 // Pushed only while the wizard draws, so other overlays keep the default font.
 ImFont *g_body_font = nullptr;
@@ -134,9 +161,10 @@ void InstallerWizard::AddSource(const std::filesystem::path &file) {
       continue;
     discs_[i].source = file;
     discs_[i].fingerprint = DiscFingerprint(image->ContentSize(), *root, i + 1);
-    discs_[i].languages = ParseDiscLanguages(*root);
+    discs_[i].languages = BootLanguages::FromDisc(*root);
     Join(added, kDiscLabels[i]);
   }
+  RefreshLanguageChoices();
 
   if (carried.empty())
     sources_status_ = i18n::Text("installer.status.not_blue_dragon");
@@ -152,7 +180,59 @@ void InstallerWizard::RemoveSource(int index) {
     if (slot.source == file)
       slot = {};
   }
+  RefreshLanguageChoices();
   sources_status_.clear();
+}
+
+void InstallerWizard::RefreshLanguageChoices() {
+  BootLanguages merged;
+  for (const auto &slot : discs_) {
+    if (slot.Filled())
+      merged.Add(slot.languages, slot.languages.All());
+  }
+  disc_langs_ = merged;
+
+  std::vector<LanguageChoice> rebuilt;
+  for (const auto &code : disc_langs_.All()) {
+    const bool on_text = HasCode(disc_langs_.Text(), code);
+    const bool on_voice = HasCode(disc_langs_.Voice(), code);
+    LanguageChoice choice{code, on_text, on_voice};
+    for (const auto &old : lang_picks_) {
+      if (old.code != code)
+        continue;
+      choice.text = on_text && old.text;
+      choice.voice = on_voice && old.voice;
+      break;
+    }
+    if (code == kRequiredLang) {
+      choice.text = on_text;
+      choice.voice = on_voice;
+    }
+    rebuilt.push_back(std::move(choice));
+  }
+  std::stable_partition(
+      rebuilt.begin(), rebuilt.end(),
+      [](const LanguageChoice &choice) { return choice.code == kRequiredLang; });
+  lang_picks_ = std::move(rebuilt);
+}
+
+InstallSelection InstallerWizard::BuildSelection() const {
+  InstallSelection selection;
+  if (!repair_) {
+    selection.languages = lang_picks_;
+    selection.movies = movies_;
+    return selection;
+  }
+
+  const auto game = std::filesystem::absolute(install_dir_) / "game";
+  const BootLanguages installed = BootLanguages::FromFile(game / "bd_boot.ini");
+  for (const auto &code : installed.All()) {
+    selection.languages.push_back({code, HasCode(installed.Text(), code),
+                                   HasCode(installed.Voice(), code)});
+  }
+  std::error_code ec;
+  selection.movies = std::filesystem::is_directory(game / "movie", ec);
+  return selection;
 }
 
 bool InstallerWizard::AllDiscsFilled() const {
@@ -223,8 +303,8 @@ void InstallerWizard::StartInstall() {
   for (int i = 0; i < kDiscCount; ++i)
     sources[i] = discs_[i].source;
   try {
-    install_thread_ =
-        Installer::RunAsync(sources, abs_game, repair_, progress_);
+    install_thread_ = Installer::RunAsync(sources, abs_game, repair_,
+                                          BuildSelection(), progress_);
   } catch (const std::system_error &e) {
     BD_ERROR("Installer::RunAsync failed to spawn worker: {}", e.what());
     progress_.SetError(i18n::Fmt("installer.error.spawn", e.what()));
@@ -373,19 +453,6 @@ void Light(bool on) {
   ImGui::Dummy(ImVec2(h, h));
 }
 
-void DrawLanguageLights(const std::set<std::string> &present) {
-  static const char *kUpper[] = {"US", "JP", "DE", "FR", "ES",
-                                 "IT", "KR", "TW", "CN", "PO"};
-  static const char *kLower[] = {"us", "jp", "de", "fr", "es",
-                                 "it", "kr", "tw", "cn", "po"};
-  for (int i = 0; i < 10; ++i) {
-    if (i)
-      ImGui::SameLine(0, 12);
-    const bool on = present.count(kLower[i]) != 0;
-    ImGui::TextColored(on ? kLit : kDim, "%s", kUpper[i]);
-  }
-}
-
 void FilenameCell(const std::filesystem::path &path) {
   if (path.empty()) {
     ImGui::TextDisabled("%s", T("installer.status.not_selected"));
@@ -491,11 +558,10 @@ void InstallerWizard::DrawContent() {
 
   DrawDiscs();
 
-  std::set<std::string> detected;
-  for (const auto &slot : discs_)
-    detected.insert(slot.languages.begin(), slot.languages.end());
-  ImGui::Dummy(ImVec2(0, 2));
-  DrawLanguageLights(detected);
+  if (!repair_) {
+    ImGui::Dummy(ImVec2(0, 10));
+    DrawLanguages();
+  }
 
   ImGui::Dummy(ImVec2(0, 10));
   SectionHeader(T("installer.section.install_dir"));
@@ -560,6 +626,67 @@ void InstallerWizard::DrawDiscs() {
     ImGui::AlignTextToFramePadding();
     ImGui::TextColored(kStatus, "%s", sources_status_.c_str());
   }
+}
+
+void InstallerWizard::DrawLanguages() {
+  SectionHeader(T("installer.section.languages"));
+
+  if (lang_picks_.empty()) {
+    ImGui::TextDisabled("%s", T("installer.language.none"));
+    return;
+  }
+
+  const char *text_label = T("installer.language.text");
+  const float text_width = ImGui::GetFrameHeight() +
+                           ImGui::GetStyle().ItemInnerSpacing.x +
+                           ImGui::CalcTextSize(text_label).x + 16.0f;
+  const char *voice_label = T("installer.language.voice");
+  const float voice_width = ImGui::GetFrameHeight() +
+                            ImGui::GetStyle().ItemInnerSpacing.x +
+                            ImGui::CalcTextSize(voice_label).x + 16.0f;
+
+  ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, ImVec2(0, 5));
+  if (ImGui::BeginTable("##languages", 3,
+                        ImGuiTableFlags_SizingFixedFit |
+                            ImGuiTableFlags_NoBordersInBody)) {
+    ImGui::TableSetupColumn("##name", ImGuiTableColumnFlags_WidthStretch);
+    ImGui::TableSetupColumn("##text", ImGuiTableColumnFlags_WidthFixed,
+                            text_width);
+    ImGui::TableSetupColumn("##voice", ImGuiTableColumnFlags_WidthFixed,
+                            voice_width);
+
+    for (size_t i = 0; i < lang_picks_.size(); ++i) {
+      LanguageChoice &pick = lang_picks_[i];
+      const bool locked = pick.code == kRequiredLang;
+      ImGui::PushID(static_cast<int>(i));
+      ImGui::TableNextRow();
+
+      ImGui::TableSetColumnIndex(0);
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextUnformatted(LanguageName(pick.code).c_str());
+
+      ImGui::BeginDisabled(locked);
+      ImGui::TableSetColumnIndex(1);
+      if (HasCode(disc_langs_.Text(), pick.code))
+        ImGui::Checkbox(text_label, &pick.text);
+
+      ImGui::TableSetColumnIndex(2);
+      if (HasCode(disc_langs_.Voice(), pick.code))
+        ImGui::Checkbox(voice_label, &pick.voice);
+      ImGui::EndDisabled();
+
+      ImGui::PopID();
+    }
+    ImGui::EndTable();
+  }
+  ImGui::PopStyleVar();
+
+  ImGui::Spacing();
+  const std::string voices = UpperJoin(disc_langs_.Voice());
+  const std::string movies_label =
+      voices.empty() ? i18n::Text("installer.language.movies")
+                     : i18n::Fmt("installer.language.movies_of", voices);
+  ImGui::Checkbox(movies_label.c_str(), &movies_);
 }
 
 void InstallerWizard::DrawOptions() {

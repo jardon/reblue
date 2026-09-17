@@ -144,7 +144,6 @@ static_assert(offsetof(SaveConfigBlock_t, brightness) == 0x30);
 constexpr u32 kConfigBlockOffset = 44876;
 constexpr u32 kCtlNormalTypeOffset = 45484;
 constexpr u32 kCtlMechattTypeOffset = 45488;
-constexpr u32 kVoiceTypeOffset = 40792;
 constexpr u32 kAudioHintsOffset = 40800;
 
 // Two blocks live in the content task. The restore reads the second only when
@@ -304,8 +303,6 @@ void GameOptions::WriteBlock() {
                           REXCVAR_GET(bd_opt_ctl_normal_type));
   bd::mem::try_store<i32>(base + kCtlMechattTypeOffset,
                           REXCVAR_GET(bd_opt_ctl_mechatt_type));
-  bd::mem::try_store<i32>(base + kVoiceTypeOffset,
-                          REXCVAR_GET(bd_opt_voice_type));
   bd::mem::try_store<i32>(base + kAudioHintsOffset,
                           REXCVAR_GET(bd_opt_audio_hints));
 }

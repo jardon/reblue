@@ -36,10 +36,10 @@ inline constexpr const char* kSlideConfigTex =
 
 // Sidebar row pitch. AnimeMenu_CalcItemPosition derives the stride from this
 // height and the row count, so it has to track kSectionCount or every row
-// re-spaces. 44 on an 8px gap ends eight rows at 548, clear of the
+// re-spaces. 40 on a 6px gap ends nine rows at 548, clear of the
 // row description line at 568.
-inline constexpr int kSectionRowH = 44;
-inline constexpr int kSectionRowGap = 8;
+inline constexpr int kSectionRowH = 40;
+inline constexpr int kSectionRowGap = 6;
 
 // Sidebar button template (l_modmgr_section.csv). The cell fills the sidebar
 // row exactly: a shorter window leaves the engine cursor frame hanging past the
@@ -67,6 +67,14 @@ protected:
 
 private:
   int checkX_;
+};
+
+class LanguageItemTemplate : public RowTemplate {
+public:
+  LanguageItemTemplate() : RowTemplate(110, 121, 470, 45) {
+    name.set("Language");
+    wndType.set("BTN01_OF");
+  }
 };
 
 // DLC detail panel template (l_modmgr_dlcdetail.csv).
@@ -366,12 +374,13 @@ public:
   FloatV kbChromeVis{"KbChromeVis", -1.0};
 
   // Sections shown in the sidebar, in cursor order: the five settings pages
-  // (SettingsPage 0..4), then Mods, Official DLC and Achievements.
+  // (SettingsPage 0..4), then Mods, Official DLC, Languages and Achievements.
   static constexpr const char *kSectionKeys[] = {
-      "settings.page.gameplay", "settings.page.display",
-      "settings.page.graphics", "settings.page.audio",
-      "settings.page.controls", "menu.header.mods",
-      "menu.header.dlc",        "menu.header.achievements"};
+      "settings.page.gameplay",  "settings.page.display",
+      "settings.page.graphics",  "settings.page.audio",
+      "settings.page.controls",  "menu.header.mods",
+      "menu.header.dlc",         "menu.header.languages",
+      "menu.header.achievements"};
   // Every section the title screen offers. A surface that shows fewer takes a
   // prefix of this, so the settings pages come first.
   static constexpr int kSectionCount =
@@ -420,6 +429,7 @@ public:
 
   AnimeMenuWidget modList = ItemList("ModList", 420, "l_modmgr_info.csv");
   AnimeMenuWidget dlcList = ItemList("DlcList", 470, "l_modmgr_dlcinfo.csv");
+  AnimeMenuWidget langList = ItemList("LangList", 470, "l_modmgr_langinfo.csv");
 
   // One list per settings page, beside the always-visible sidebar. Filled by
   // the constructor so the page names have a single spelling.
@@ -460,6 +470,7 @@ public:
 
   void SetModCount(size_t count);
   void SetDLCCount(size_t count);
+  void SetLanguageCount(size_t count);
   void SetAchievementCount(size_t count);
   void SetSettingsCounts(const size_t (&pageCounts)[kSettingsSectionCount],
                          size_t keybinds);

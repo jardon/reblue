@@ -8,6 +8,7 @@
  *            See LICENSE file in the project root for full license text.
  */
 #include "engine/menus/config_menu.h"
+#include "core/i18n.h"
 #include "core/logging.h"
 #include "core/settings_model.h"
 #include "engine/d2anime/anime_hittest.h"
@@ -71,6 +72,7 @@ bool ConfigMenu::PointerHop() {
   case State::SETTINGS:
   case State::MODLIST:
   case State::DLCLIST:
+  case State::LANGLIST:
   case State::ACHVLIST:
     if (!section_menu_.PointerRowX(row, x))
       return false;
@@ -94,7 +96,7 @@ void ConfigMenu::HandleSection() {
   }
 
   if (CheckAction(GameAction::Cancel)) {
-    if (DlcChanged() || settings_restart_dirty_)
+    if (DlcChanged() || LanguagesChanged() || settings_restart_dirty_)
       Transition(State::CONFIRM_REBOOT);
     else
       Transition(State::CLOSING);
@@ -479,7 +481,7 @@ void ConfigMenu::HandleModlist() {
 
   if (CheckButton(Button::X) && ModCount() > 0) {
     delete_index_ = modlist_menu_.CursorIndex();
-    delete_is_dlc_ = false;
+    delete_kind_ = DeleteKind::Mod;
     Transition(State::CONFIRM_DELETE);
     return;
   }
@@ -511,7 +513,7 @@ void ConfigMenu::HandleDLCList() {
 
   if (CheckButton(Button::X) && DlcCount() > 0) {
     delete_index_ = dlclist_menu_.CursorIndex();
-    delete_is_dlc_ = true;
+    delete_kind_ = DeleteKind::DLC;
     Transition(State::CONFIRM_DELETE);
     return;
   }
@@ -529,6 +531,139 @@ void ConfigMenu::HandleDLCList() {
 
   if (CheckAction(GameAction::Cancel))
     Transition(State::SECTION);
+}
+
+void ConfigMenu::HandleLangList() {
+#ifdef REBLUE_BUILD_INSTALLER
+  if (CheckButton(Button::X)) {
+    const int cursor = langlist_menu_.CursorIndex();
+    if (cursor >= 0 && cursor < static_cast<int>(LanguageCount()) &&
+        LanguageRemovable(cursor)) {
+      delete_index_ = cursor;
+      delete_kind_ = DeleteKind::Language;
+      Transition(State::CONFIRM_DELETE);
+    }
+    return;
+  }
+
+  if (CheckButton(Button::Back)) {
+    lang_prompt_.clear();
+    Transition(State::LANGADD);
+    return;
+  }
+#endif
+
+  if (CheckAction(GameAction::Cancel))
+    Transition(State::SECTION);
+}
+
+void ConfigMenu::HandleLangAdd() {
+  if (!confirm_popup_.Poll())
+    return;
+
+  if (!confirm_popup_.Confirmed()) {
+    confirm_popup_.Kill();
+    ClearLanguageSources();
+    Transition(State::LANGLIST);
+    return;
+  }
+
+  confirm_popup_.Kill();
+
+  std::string detail;
+  switch (AddLanguageSources(detail)) {
+  case LanguageAddResult::Picked:
+    lang_pick_ = 0;
+    lang_accept_.assign(LanguageOfferCount(), false);
+    Transition(State::LANGPICK);
+    break;
+  case LanguageAddResult::Missing:
+    lang_prompt_ = detail;
+    Transition(State::LANGADD);
+    break;
+  case LanguageAddResult::Canceled:
+    Transition(State::LANGLIST);
+    break;
+  case LanguageAddResult::NothingNew:
+    lang_notice_ = i18n::Text("menu.language.nothing_new");
+    Transition(State::LANGNOTICE);
+    break;
+  case LanguageAddResult::Failed:
+    lang_notice_ = i18n::Fmt("menu.language.failed", detail);
+    Transition(State::LANGNOTICE);
+    break;
+  }
+}
+
+void ConfigMenu::HandleLangPick() {
+  if (!confirm_popup_.Poll())
+    return;
+
+  const bool yes = confirm_popup_.Confirmed();
+  const bool canceled = confirm_popup_.Canceled();
+  confirm_popup_.Kill();
+
+  if (canceled) {
+    ClearLanguageSources();
+    BD_DEBUG("[config] language add canceled at question {}", lang_pick_);
+    Transition(State::LANGLIST);
+    return;
+  }
+
+  const int offers = static_cast<int>(LanguageOfferCount());
+  if (lang_pick_ < offers) {
+    lang_accept_[static_cast<size_t>(lang_pick_)] = yes;
+    ++lang_pick_;
+    Transition(State::LANGPICK);
+    return;
+  }
+
+  bool any = yes;
+  for (bool on : lang_accept_)
+    any = any || on;
+
+  if (!any) {
+    ClearLanguageSources();
+    lang_notice_ = i18n::Text("menu.language.nothing_new");
+    Transition(State::LANGNOTICE);
+    return;
+  }
+
+  std::string detail;
+  if (!StartLanguageJob(lang_accept_, yes, detail)) {
+    lang_notice_ = i18n::Fmt("menu.language.failed", detail);
+    Transition(State::LANGNOTICE);
+    return;
+  }
+
+  Transition(State::LANGJOB);
+}
+
+void ConfigMenu::HandleLangJob() {
+  std::string error;
+  switch (PollLanguageJob(error)) {
+  case LanguageJobOutcome::Running:
+    if (CheckAction(GameAction::Cancel) && LanguageJobCancelable())
+      RequestLanguageJobCancel();
+    break;
+  case LanguageJobOutcome::Canceled:
+    Transition(State::LANGLIST);
+    break;
+  case LanguageJobOutcome::Failed:
+    lang_notice_ = i18n::Fmt("menu.language.failed", error);
+    Transition(State::LANGNOTICE);
+    break;
+  case LanguageJobOutcome::Done:
+    resume_state_ = State::LANGLIST;
+    wants_restart_ = true;
+    Transition(State::CLOSING);
+    break;
+  }
+}
+
+void ConfigMenu::HandleLangNotice() {
+  if (CheckAction(GameAction::Confirm) || CheckAction(GameAction::Cancel))
+    Transition(State::LANGLIST);
 }
 
 void ConfigMenu::HandleKeybindCapture() {
@@ -581,27 +716,42 @@ void ConfigMenu::HandleConfirmDelete() {
   if (!confirm_popup_.Poll())
     return;
 
+  const State list = delete_kind_ == DeleteKind::DLC        ? State::DLCLIST
+                     : delete_kind_ == DeleteKind::Language ? State::LANGLIST
+                                                            : State::MODLIST;
+
   if (!confirm_popup_.Confirmed()) {
     confirm_popup_.Kill();
     BD_DEBUG("[config] delete canceled");
-    Transition(delete_is_dlc_ ? State::DLCLIST : State::MODLIST);
+    Transition(list);
     return;
   }
 
   confirm_popup_.Kill();
-  const bool ok =
-      delete_is_dlc_ ? DeleteDLC(delete_index_) : RemoveMod(delete_index_);
-  if (!ok) {
-    BD_ERROR("[config] {} delete failed for [{}]",
-             delete_is_dlc_ ? "dlc" : "mod", delete_index_);
-    Transition(delete_is_dlc_ ? State::DLCLIST : State::MODLIST);
+
+  if (delete_kind_ == DeleteKind::Language) {
+    if (!RemoveLanguage(delete_index_)) {
+      BD_ERROR("[config] language remove failed for [{}]", delete_index_);
+      Transition(State::LANGLIST);
+      return;
+    }
+    Transition(State::LANGJOB);
     return;
   }
 
-  BD_DEBUG("[config] deleted {}[{}]", delete_is_dlc_ ? "dlc" : "mod",
+  const bool ok = delete_kind_ == DeleteKind::DLC ? DeleteDLC(delete_index_)
+                                                  : RemoveMod(delete_index_);
+  if (!ok) {
+    BD_ERROR("[config] {} delete failed for [{}]", DeleteKindName(delete_kind_),
+             delete_index_);
+    Transition(list);
+    return;
+  }
+
+  BD_DEBUG("[config] deleted {}[{}]", DeleteKindName(delete_kind_),
            delete_index_);
   wants_restart_ = true;
-  resume_state_ = delete_is_dlc_ ? State::DLCLIST : State::MODLIST;
+  resume_state_ = list;
   Transition(State::CLOSING);
 }
 

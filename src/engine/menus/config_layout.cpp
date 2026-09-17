@@ -729,6 +729,10 @@ void ConfigLayout::SetDLCCount(size_t count) {
   SetListCount(dlcList, count, "l_modmgr_dlcinfo.csv");
 }
 
+void ConfigLayout::SetLanguageCount(size_t count) {
+  SetListCount(langList, count, "l_modmgr_langinfo.csv");
+}
+
 // The catalog is never empty (the title's XDBF ships 43), so unlike the mod and
 // DLC lists there is no no-data branch. The rows are a settings page's, not a
 // mod list's, so the list runs to the same depth a settings page does.
@@ -839,6 +843,7 @@ void ConfigLayout::build(CsvBuilder &b) {
       {"mod list", &modList, 1},
       {"achievement list", &achvList, 1},
       {"dlc list", &dlcList, 1},
+      {"language list", &langList, 1},
   };
 
   b.panel(cfgIcon).blank();

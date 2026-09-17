@@ -25,6 +25,7 @@
 #include <rex/ui/windowed_app_context.h>
 
 #include "core/settings_model.h"
+#include "installer/boot_languages.h"
 #include "installer/disc_install.h"
 #include "installer/install_registry.h"
 #include "vfs/vfs.h"
@@ -87,6 +88,7 @@ private:
   void DrawContent();
   void DrawOptions();
   void DrawDiscs();
+  void DrawLanguages();
   void DrawDLCSection();
   void DrawPreferences();
   void DrawFooter();
@@ -103,6 +105,8 @@ private:
   void PickInstallDir();
   bool AllDiscsFilled() const;
   bool InputsReady() const;
+  void RefreshLanguageChoices();
+  InstallSelection BuildSelection() const;
   void StartInstall();
   void StartIndexRebuild();
   void Finish(bool completed);
@@ -124,11 +128,15 @@ private:
   struct DiscSlot {
     std::filesystem::path source;
     std::string fingerprint;
-    std::set<std::string> languages;
+    BootLanguages languages;
     bool Filled() const { return !source.empty(); }
   };
   std::array<DiscSlot, kDiscCount> discs_;
   std::string sources_status_;
+
+  BootLanguages disc_langs_;
+  std::vector<LanguageChoice> lang_picks_;
+  bool movies_ = true;
 
   std::filesystem::path
       install_dir_; // install_dir/{game,user} created at install time

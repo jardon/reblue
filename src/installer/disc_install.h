@@ -20,6 +20,7 @@
 #include <set>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace rex::filesystem {
 class Device;
@@ -27,6 +28,9 @@ class Entry;
 } // namespace rex::filesystem
 
 namespace bd::installer {
+
+inline constexpr const char *kDiscLabels[kDiscCount] = {"DVD 1", "DVD 2",
+                                                        "DVD 3"};
 
 struct InstallProgress {
   std::atomic<size_t> files_done{0};
@@ -69,8 +73,6 @@ bool ValidateDisc(rex::filesystem::Entry &root, int disc_number);
 std::string DiscFingerprint(size_t content_size, rex::filesystem::Entry &root,
                             int disc_number);
 
-std::set<std::string> ParseDiscLanguages(rex::filesystem::Entry &root);
-
 class DiscImage {
 public:
   static std::unique_ptr<DiscImage> Open(const std::filesystem::path &file);
@@ -90,12 +92,32 @@ private:
   size_t content_size_ = 0;
 };
 
+struct LanguageChoice {
+  std::string code;
+  bool text = false;
+  bool voice = false;
+};
+
+struct InstallSelection {
+  std::vector<LanguageChoice> languages;
+  bool movies = true;
+};
+
 class Installer {
 public:
   static std::thread
   RunAsync(const std::array<std::filesystem::path, kDiscCount> &sources,
            const std::filesystem::path &game_data_dest, bool repair,
-           InstallProgress &progress);
+           const InstallSelection &selection, InstallProgress &progress);
+
+  static std::thread AddLanguagesAsync(
+      const std::array<std::filesystem::path, kDiscCount> &sources,
+      const std::filesystem::path &game_data_dest,
+      const InstallSelection &selection, InstallProgress &progress);
+
+  static std::thread
+  RemoveLanguageAsync(const std::filesystem::path &game_data_dest,
+                      const std::string &lang, InstallProgress &progress);
 };
 
 } // namespace bd::installer

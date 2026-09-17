@@ -26,6 +26,9 @@ public:
   u32 Cursor() const;
   void SetCursor(u32 cursor);
 
+  u32 VoicePick() const;
+  void SetVoicePick(u32 pick);
+
   bool HasSaveData() const;
   bool IsXboxLive() const;
 

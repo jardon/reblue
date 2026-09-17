@@ -41,6 +41,8 @@ constexpr double kDimAlpha = 90.0, kFullAlpha = 255.0;
 // so this is short of that by enough to absorb unusually wide ones.
 constexpr int kRowDescWrapChars = 82;
 
+constexpr int kNoticeWrapChars = 50;
+
 double DimFor(bool disabled) { return disabled ? kDimAlpha : kFullAlpha; }
 
 constexpr int kPadTypes = PadLayoutTemplate::kTypeCount;
@@ -142,6 +144,27 @@ void ConfigMenu::UpdateDLCDetail(int index) {
 
 void ConfigMenu::HideDLCDetail() { task_.SetFloat("dlcdetail.start", -1.0); }
 
+void ConfigMenu::UpdateLanguageDetail(int index) {
+  if (index < 0 || index >= static_cast<int>(LanguageCount())) {
+    HideDLCDetail();
+    return;
+  }
+
+  task_.SetFloat("dlcdetail.start", 1.0);
+  task_.SetText("dlcdetail.Desc0", LanguageKinds(index));
+  task_.SetText("dlcdetail.Desc1",
+                i18n::Fmt("menu.language.on_disk", LanguageSize(index)));
+  task_.SetText("dlcdetail.Desc2",
+                LanguageRemovable(index)
+                    ? std::string()
+                    : i18n::Text("menu.language.required"));
+}
+
+void ConfigMenu::ShowLanguageNotice(const std::string &text) {
+  const auto lines = WrapTwoLines(text, kNoticeWrapChars);
+  notice_popup_.Show(task_, lines[0], lines[1]);
+}
+
 void ConfigMenu::SetRowDesc(const std::string &text) {
   auto &layout = GetLayout();
   const auto lines = WrapTwoLines(text, kRowDescWrapChars);
@@ -227,6 +250,31 @@ void ConfigMenu::UpdateFooter() {
                  .y = "footer.toggle",
                  .back = "footer.install_dlc"});
     break;
+  case State::LANGLIST: {
+#ifdef REBLUE_BUILD_INSTALLER
+    const int cursor = MenusReady() ? langlist_menu_.CursorIndex() : -1;
+    const bool removable = cursor >= 0 &&
+                           cursor < static_cast<int>(LanguageCount()) &&
+                           LanguageRemovable(cursor);
+    SetFooter({.b = "footer.back",
+               .x = removable ? "footer.delete" : nullptr,
+               .back = "footer.install_language"});
+#else
+    SetFooter({.b = "footer.back"});
+#endif
+    break;
+  }
+  case State::LANGADD:
+  case State::LANGPICK:
+    SetFooter({});
+    break;
+  case State::LANGNOTICE:
+    SetFooter({.b = "footer.back"});
+    break;
+  case State::LANGJOB:
+    SetFooter(LanguageJobCancelable() ? FooterLabels{.b = "footer.cancel"}
+                                      : FooterLabels{});
+    break;
   case State::SETTINGS: {
     // A opens the keybind screen only while an action row is highlighted.
     const int slot = MenusReady() ? CurrentSettingsList().CursorIndex() : -1;
@@ -296,6 +344,18 @@ void ConfigMenu::PopulateNames() {
       else
         vb.SetText("Name", dlc.Count() == 0 ? i18n::Text("menu.list.no_dlc")
                                             : std::string());
+    });
+  } else if (content == State::LANGLIST || content == State::LANGADD ||
+             content == State::LANGPICK || content == State::LANGJOB ||
+             content == State::LANGNOTICE) {
+    const size_t langCount = LanguageCount();
+    langlist_menu_.ForEachSlot([&](int, int i, AnimeData vb) {
+      if (i < static_cast<int>(langCount))
+        vb.SetText("Name", LanguageName(i));
+      else
+        vb.SetText("Name", langCount == 0
+                               ? i18n::Text("menu.list.no_languages")
+                               : std::string());
     });
   } else if (content == State::ACHVLIST) {
     AchievementRowTemplate::PopulateNames(achvlist_menu_);

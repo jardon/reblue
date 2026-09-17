@@ -65,6 +65,7 @@ public:
   bool Poll() const;
 
   bool Confirmed() const;
+  bool Canceled() const;
   int SelectedAnswer() const;
 
   void Kill();
