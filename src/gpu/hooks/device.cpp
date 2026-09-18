@@ -38,7 +38,7 @@ namespace {
 u32 D3DDevice_Clear_hook(u32 /*device*/, u32 /*count*/, u32 /*rects*/,
                          u32 flags, u32 color, f64 z, u32 /*z_gpr_slot*/,
                          u32 stencil, u32 /*edram_clear*/) {
-  bd::gpu::Video::RequestClear(flags, color, float(z), stencil);
+  bd::gpu::Video::Clear(flags, color, float(z), stencil);
   return 0;
 }
 

@@ -48,7 +48,7 @@
 #include "gpu/output.h"
 #include "gpu/pipeline/pso_recorder.h"
 #include "gpu/settings.h"
-#include "gpu/surface_pool.h"
+#include "gpu/surface_registry.h"
 #include "platform/platform.h"
 
 namespace plume {
@@ -485,9 +485,6 @@ void Video::BeginShutdown() {
   // the UI thread, which is the thread running the shutdown) holds s.mutex, so
   // taking it here would deadlock stage 1 of the sequence.
   state().shutting_down.store(true, std::memory_order_release);
-  // Not in Shutdown(): that early-returns on a lost device, which is exactly
-  // the run whose pool history is worth having.
-  SurfacePool::LogSummary();
 }
 
 void Video::Shutdown(const std::function<void()> &ui_pump) {

@@ -30,7 +30,7 @@ u32 AllocateSlot(VideoState &s) {
 // hold draws whose constants index this slot, so rewriting it now would serve
 // them the null sentinel. DrainDescriptorSlotsLocked pays the rewrite
 // once the slot's next fence proves every such list retired. The old texture
-// object outlives the descriptor via texture_graveyard / SurfacePool, which
+// object outlives the descriptor via texture_graveyard, which
 // share the same boundary. Caller holds s.mutex.
 void ParkDescriptorSlotLocked(VideoState &s, u32 slot, u32 null_index) {
   if (slot < kNullTextureDescriptorCount ||

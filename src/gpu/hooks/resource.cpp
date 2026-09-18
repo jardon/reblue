@@ -28,7 +28,7 @@
 #include "gpu/native_texture_mirror.h"
 #include "gpu/output.h"
 #include "gpu/physical_buffers.h"
-#include "gpu/surface_pool.h"
+#include "gpu/surface_registry.h"
 #include "gpu/texture_upload.h"
 
 namespace {
@@ -70,7 +70,7 @@ bd::gpu::GuestTexture *D3DDevice_CreateSurface_hook(u32 width, u32 height,
           ? bd::gpu::Video::CvarMSAASampleCount()
           : plume::RenderSampleCount::COUNT_1;
 
-  return bd::gpu::SurfacePool::Acquire(width, height, format,
+  return bd::gpu::SurfaceRegistry::Get(width, height, format,
                                        static_cast<u32>(msaa_count));
 }
 

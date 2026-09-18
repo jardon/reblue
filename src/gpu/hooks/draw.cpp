@@ -534,18 +534,11 @@ u32 D3DDevice_Resolve_hook(u32 /*device_guest*/, u32 Flags, u32 /*pSourceRect*/,
     }
     return 0;
   }
-  // DestSliceOrFace selects the cube face (D3DCUBEMAP_FACES) for a cube
-  // destination, and DestLevel the mip. Both are 0 for the common 2D resolve.
   bd::gpu::Video::TrackResolveSource(Flags, dst, DestLevel, DestSliceOrFace);
   bd::gpu::Video::ResolveRtToTexture(dst);
   return 0;
 }
 
-// Per the X360 contract this clears the bound EDRAM tile, so draws record over
-// a known state rather than the host RT's stale contents.
-//
-// ClearZ arrives in fpr1 and marshals as f64, and the Xenon ABI float slot skip
-// reserves r8, so ClearStencil is in r9 and needs the placeholder to line up.
 u32 D3DDevice_BeginTiling_hook(u32 /*device_guest*/, u32 /*Flags*/,
                                u32 /*Count*/, u32 /*pTileRects*/,
                                mapped_f32 pClearColor, f64 ClearZ,
@@ -555,21 +548,14 @@ u32 D3DDevice_BeginTiling_hook(u32 /*device_guest*/, u32 /*Flags*/,
     const auto pack = [](float v) -> u32 {
       return static_cast<u32>(std::clamp(v, 0.0f, 1.0f) * 255.0f + 0.5f);
     };
-    color_argb = (pack(color_vec[3]) << 24)   // A
-                 | (pack(color_vec[0]) << 16) // R
-                 | (pack(color_vec[1]) << 8)  // G
-                 | (pack(color_vec[2]) << 0); // B
+    color_argb = (pack(color_vec[3]) << 24) | (pack(color_vec[0]) << 16) |
+                 (pack(color_vec[1]) << 8) | (pack(color_vec[2]) << 0);
   }
-  // X360 D3DCLEAR bits: TARGET 0x1 | ZBUFFER 0x10 | STENCIL 0x20 = color+depth+
-  // stencil. The pending clear drains onto the bound RT/DS at the next draw,
-  // matching the BeginTiling -> draws -> EndTiling flow.
-  bd::gpu::Video::RequestClear(0x31u, color_argb, float(ClearZ), ClearStencil);
+  bd::gpu::Video::Clear(bd::gpu::kClearAll, color_argb, float(ClearZ),
+                        ClearStencil);
   return 0;
 }
 
-// Copies the resolved EDRAM tile into pDestTexture, the Resolve equivalent.
-// Here ClearZ marshals as a single u32 slot, not the wider double slot
-// Resolve's earlier ClearZ uses.
 u32 D3DDevice_EndTiling_hook(u32 /*device_guest*/, u32 ResolveFlags,
                              u32 /*pResolveRects*/, u32 pDestTexture,
                              u32 /*pClearColor*/, u32 /*ClearZ*/,

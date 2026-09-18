@@ -14,4 +14,4 @@
 #include "gpu/output.h"
 #include "gpu/pipeline/pso_recorder.h"
 #include "gpu/settings.h"
-#include "gpu/surface_pool.h"
+#include "gpu/surface_registry.h"

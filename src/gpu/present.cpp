@@ -33,9 +33,6 @@ namespace bd::gpu {
 
 namespace {
 
-// setVsyncEnabled only assigns the bool the present path reads, so applying it
-// every frame is free and stops a resize (which rebuilds the swapchain with
-// vsync on) leaving a stale value.
 void ApplyVsync(VideoState &s) {
   if (s.swap_chain) {
     s.swap_chain->setVsyncEnabled(Settings::Get().Vsync());
@@ -44,16 +41,10 @@ void ApplyVsync(VideoState &s) {
 
 constexpr i32 kIdleFPS = 30;
 
-// Sleeps (no busy-wait) so consecutive presents sit at least 1000/bd_fps_limit
-// ms apart, and 0 disables. Pacing the render thread back-pressures the guest
-// main thread through the DrawEnd event. Runs even under vsync, which paces to
-// the monitor instead, and a 120Hz panel ran the loop at 120 under a 60 cap.
 void PaceFrame(bool idle = false) {
   using Clock = std::chrono::steady_clock;
   static Clock::time_point next{};
   i32 fps = bd::engine::Settings::Get().FPSLimit();
-  // The Sofdec movie clock advances from the per-frame delta inside BD's
-  // 30Hz-gated logic, so it only runs at 1.0x when the engine ticks at 30Hz.
   if (bd::engine::SofdecPlayer::Playing())
     fps = 30;
   if (idle && (fps <= 0 || fps > kIdleFPS))
@@ -73,9 +64,6 @@ void PaceFrame(bool idle = false) {
   }
 }
 
-// A recorded list must still keep the ring's per-slot fence discipline. A frame
-// that opened none deliberately leaves the ring unrotated, so destroys stamped
-// this frame carry to this slot's next reuse. Releases 'lock' when it drains.
 void AbandonFrame(VideoState &s, std::unique_lock<std::mutex> &lock) {
   s.frame_present_committed = true;
   if (!s.command_list_open)
@@ -87,15 +75,8 @@ void AbandonFrame(VideoState &s, std::unique_lock<std::mutex> &lock) {
   DrainSlot(s, reclaimed);
 }
 
-// Rebuild the swapchain and everything keyed to its back buffers.
 void RebuildSwapChain(VideoState &s) {
-  // Execute the open list, do not just end it: plume's CPU-side state tracker
-  // updates on barriers() while the GPU transitions fire on execute, so
-  // abandoning a list leaves the tracker claiming states the GPU never reached.
   SubmitOpenListLocked(s);
-  // Every slot's back buffer / framebuffer reference must retire before
-  // resize() destroys the old back buffer COMs, so wait every submitted slot's
-  // fence.
   for (u32 i = 0; i < kNumFrames; ++i) {
     if (s.command_list_submitted[i]) {
       s.queue->waitForCommandFence(s.fences[i].get());
@@ -106,27 +87,18 @@ void RebuildSwapChain(VideoState &s) {
   if (!s.swap_chain->resize() || !BuildFramebuffers(s) ||
       !BuildPresentSemaphores(s)) {
     if (s.swap_chain->getWidth() && s.swap_chain->getHeight())
-      BD_ERROR("Swap chain resize failed"); // minimized 0x0 is benign
+      BD_ERROR("Swap chain resize failed");
   }
 }
 
-// BD renders its whole frame with RT[0] implicit, so the finished image lives
-// in the back_buffer_surface placeholder and the frontBuffer handed to Swap is
-// an empty guest surface that must not outrank it. 'chosen' reports the pick
-// before the deferred resolve redirect, which the late-clear guard needs.
-GuestTexture *SelectPresentSource(VideoState &s, GuestTexture *frontBuffer,
-                                  GuestTexture *&chosen) {
-  GuestTexture *last_rt = s.last_drawn_rt[s.recording_slot()];
+GuestTexture *SelectPresentSource(VideoState &s, GuestTexture *frontBuffer) {
+  GuestTexture *last_rt = s.last_drawn_rt;
   GuestTexture *rt = (s.back_buffer_surface && last_rt == s.back_buffer_surface)
                          ? s.back_buffer_surface
                      : (frontBuffer && frontBuffer->texture) ? frontBuffer
                      : last_rt                               ? last_rt
                      : s.last_resolved_dst ? s.last_resolved_dst
                                            : s.back_buffer_surface;
-  chosen = rt;
-  // A deferred resolve dst still has its content in the source surface. Not for
-  // an MSAA source: the gamma blit samples a Texture2D SRV while the descriptor
-  // is a Texture2DMS view.
   if (rt && rt->sourceSurface && rt->sourceSurface != rt &&
       rt->sourceSurface->texture &&
       rt->sourceSurface->sampleCount == plume::RenderSampleCount::COUNT_1 &&
@@ -136,50 +108,26 @@ GuestTexture *SelectPresentSource(VideoState &s, GuestTexture *frontBuffer,
   return rt;
 }
 
-// Per-frame order: RT[0] -> COLOR_WRITE (+ late clear if no draw bound it)
-// -> SHADER_READ, then back buffer -> COLOR_WRITE, fullscreen tri sampling
-// RT[0]
-// -> PRESENT.
-void RecordPresentPass(VideoState &s, GuestTexture *rt, GuestTexture *chosen,
+void RecordPresentPass(VideoState &s, GuestTexture *rt,
                        plume::RenderTexture *back,
                        plume::RenderFramebuffer *back_fb) {
   BD_GPU_ZONE("RecordPresentPass");
-  if (rt->layout != plume::RenderTextureLayout::COLOR_WRITE &&
-      rt->layout != plume::RenderTextureLayout::SHADER_READ) {
+  if (rt->layout != plume::RenderTextureLayout::SHADER_READ) {
     const bool needs_discard =
         (rt->layout == plume::RenderTextureLayout::UNKNOWN);
+    if (needs_discard) {
+      s.command_list->barriers(
+          plume::RenderBarrierStage::GRAPHICS,
+          plume::RenderTextureBarrier(rt->texture,
+                                      plume::RenderTextureLayout::COLOR_WRITE));
+      s.command_list->discardTexture(rt->texture);
+    }
     s.command_list->barriers(
         plume::RenderBarrierStage::GRAPHICS,
         plume::RenderTextureBarrier(rt->texture,
-                                    plume::RenderTextureLayout::COLOR_WRITE));
-    rt->layout = plume::RenderTextureLayout::COLOR_WRITE;
-    // discardTexture requires RT/DS state, which the barrier just set. Same as
-    // BindDrawFramebuffer.
-    if (needs_discard)
-      s.command_list->discardTexture(rt->texture);
+                                    plume::RenderTextureLayout::SHADER_READ));
+    rt->layout = plume::RenderTextureLayout::SHADER_READ;
   }
-  // Late clear only for the placeholder back buffer (no draws this frame).
-  // Clearing last_resolved_dst/last_drawn_rt would erase what is being blitted.
-  const bool clear_target_is_engine_content =
-      (chosen == s.last_resolved_dst) ||
-      (chosen == s.last_drawn_rt[s.recording_slot()]) || (rt != chosen);
-  if (s.clear_pending && !clear_target_is_engine_content &&
-      rt->layout == plume::RenderTextureLayout::COLOR_WRITE) {
-    plume::RenderFramebuffer *rt_fb = GetFramebuffer(s, rt, nullptr);
-    if (rt_fb) {
-      s.command_list->setFramebuffer(rt_fb);
-      s.command_list->clearColor(0, ArgbToRenderColor(s.clear_color_argb));
-      s.command_list->setFramebuffer(nullptr);
-    }
-  }
-
-  s.clear_pending = false;
-
-  s.command_list->barriers(
-      plume::RenderBarrierStage::GRAPHICS,
-      plume::RenderTextureBarrier(rt->texture,
-                                  plume::RenderTextureLayout::SHADER_READ));
-  rt->layout = plume::RenderTextureLayout::SHADER_READ;
 
   const u32 swap_w = s.swap_chain->getWidth();
   const u32 swap_h = s.swap_chain->getHeight();
@@ -190,11 +138,6 @@ void RecordPresentPass(VideoState &s, GuestTexture *rt, GuestTexture *chosen,
                                back, plume::RenderTextureLayout::COLOR_WRITE));
   s.command_list->setFramebuffer(back_fb);
 
-  // Fits what BD actually rendered rather than what the cvar asks for, so a
-  // live aspect change or a resize cannot stretch the image: neither moves the
-  // render rect. A Sofdec movie is prerendered 16:9 and BD stretches it
-  // across that rect, so fitting the present to the design ratio squeezes it
-  // back out. Stretch mode asked for the distortion and keeps it.
   const double present_aspect =
       (bd::engine::SofdecPlayer::Playing() && !Output::StretchToFill())
           ? kDesignCanvasAspect
@@ -204,7 +147,6 @@ void RecordPresentPass(VideoState &s, GuestTexture *rt, GuestTexture *chosen,
   Output::ComputeFit(swap_w, swap_h, present_aspect, fit_w, fit_h, off_x,
                           off_y);
   if (fit_w != swap_w || fit_h != swap_h) {
-    // Clear the whole back buffer so the uncovered edges show as black bars.
     s.command_list->clearColor(0, plume::RenderColor(0.0f, 0.0f, 0.0f, 1.0f));
   }
   s.command_list->setViewports(plume::RenderViewport(
@@ -213,11 +155,8 @@ void RecordPresentPass(VideoState &s, GuestTexture *rt, GuestTexture *chosen,
   s.command_list->setScissors(
       plume::RenderRect(off_x, off_y, off_x + static_cast<i32>(fit_w),
                         off_y + static_cast<i32>(fit_h)));
-  // pow(color, guest scanout ramp exponent * kPresentGamma), then the guest TV
-  // display correction curve at kPresentDisplayCorrection strength. Pipeline
-  // layout + bindless sets were bound once at BeginCommandList.
-  constexpr float kPresentGamma = 1.0f;             // guest ramp unscaled
-  constexpr float kPresentDisplayCorrection = 1.0f; // full X360 scanout curve
+  constexpr float kPresentGamma = 1.0f;
+  constexpr float kPresentDisplayCorrection = 1.0f;
   s.command_list->setPipeline(s.gamma_correction_pipeline.get());
   struct PresentPushConstants {
     u32 descriptor_index;
@@ -231,16 +170,11 @@ void RecordPresentPass(VideoState &s, GuestTexture *rt, GuestTexture *chosen,
                                            sizeof(pc));
   s.command_list->drawInstanced(3, 1, 0, 0);
 
-  // Overlays (the F3 menu) cover the whole window, not the letterboxed rect.
   s.command_list->setViewports(plume::RenderViewport(
       0.0f, 0.0f, static_cast<float>(swap_w), static_cast<float>(swap_h)));
   s.command_list->setScissors(plume::RenderRect(0, 0, static_cast<i32>(swap_w),
                                                 static_cast<i32>(swap_h)));
 
-  // Onto the back buffer while it is still bound + COLOR_WRITE. The hook
-  // marshals to the UI thread (ImGui is not thread-safe) and records into this
-  // list while this guest thread is parked, so it runs under the s.mutex we
-  // already hold.
   if (g_overlay_draw_hook) {
     g_overlay_draw_hook(s.command_list, back_fb, swap_w, swap_h);
   }
@@ -253,48 +187,28 @@ void RecordPresentPass(VideoState &s, GuestTexture *rt, GuestTexture *chosen,
 
 } // namespace
 
-void Video::RequestClear(u32 flags, u32 color_argb, float depth, u32 stencil) {
+void Video::Clear(u32 flags, u32 color_argb, float depth, u32 stencil) {
   auto &s = state();
   std::lock_guard lock(s.mutex);
-  s.clear_pending = true;
-  s.clear_flags = flags;
-  s.clear_color_argb = color_argb;
-  s.clear_depth = depth;
-  s.clear_stencil = stencil;
-  // BD's frame model is Clear -> draws -> Swap, so the first Clear is the frame
-  // boundary. Opening the list twice is safe, so the paired second Clear is a
-  // no-op. Without it draws record into a closed list and vanish.
   s.frame_present_committed = false;
   BeginCommandList(s);
-
-  // X360 Clear hits the bound RT immediately, while reblue defers so the next
-  // draw folds it into a load op. A color clear whose RT then receives no draw
-  // would float to an unrelated RT, so between passes with a real color target
-  // clear now. The deferred path still covers depth, stencil and mid-pass.
-  GuestTexture *rt = s.render_target;
-  if (s.command_list_open && (flags & 0x1u) != 0 && rt && rt->texture &&
-      !s.draw_framebuffer_bound) {
-    // The clear wipes rt, so deferred resolves out of it must copy first. A
-    // pending resolve into it is fully replaced, so that link just drops.
-    MaterializeOutboundLocked(s, rt);
-    DetachSourceSurfaceLocked(s, rt);
-    const bool fresh = rt->layout == plume::RenderTextureLayout::UNKNOWN;
-    if (rt->layout != plume::RenderTextureLayout::COLOR_WRITE) {
-      plume::RenderTextureBarrier b(rt->texture,
-                                    plume::RenderTextureLayout::COLOR_WRITE);
-      s.command_list->barriers(plume::RenderBarrierStage::GRAPHICS, &b, 1);
-      rt->layout = plume::RenderTextureLayout::COLOR_WRITE;
-    }
-    if (fresh)
-      s.command_list->discardTexture(rt->texture);
-    if (plume::RenderFramebuffer *fb = GetFramebuffer(s, rt, nullptr)) {
-      s.command_list->setFramebuffer(fb);
-      s.command_list->clearColor(0, ArgbToRenderColor(color_argb));
-      s.command_list->setFramebuffer(nullptr);
-      s.clear_flags &= ~0x1u;
-      if ((s.clear_flags & 0x30u) == 0)
-        s.clear_pending = false;
-    }
+  if (!s.command_list_open)
+    return;
+  GuestTexture *rt = nullptr;
+  GuestTexture *ds = nullptr;
+  ResolveEffectiveTargets(s, rt, ds);
+  const bool clear_color = (flags & kClearTarget) != 0 && rt != nullptr;
+  const bool clear_depth = (flags & kClearZBuffer) != 0 && ds != nullptr;
+  const bool clear_stencil = (flags & kClearStencil) != 0 && ds != nullptr;
+  if (!clear_color && !clear_depth && !clear_stencil)
+    return;
+  if (!BindDrawFramebufferLocked(clear_color))
+    return;
+  if (clear_color)
+    s.command_list->clearColor(0, ArgbToRenderColor(color_argb));
+  if (clear_depth || clear_stencil) {
+    s.command_list->clearDepthStencil(clear_depth, clear_stencil, depth,
+                                      stencil);
   }
 }
 
@@ -304,17 +218,12 @@ void Video::RequestResize() {
 
 void Video::Present(GuestTexture *frontBuffer) {
   auto &s = state();
-  // Before the lock: shutdown runs on the UI thread, so a Present that reached
-  // the overlay hook would marshal into a thread no longer pumping, holding
-  // s.mutex while it waits.
   if (s.shutting_down.load(std::memory_order_acquire))
     return;
   std::unique_lock lock(s.mutex);
   if (!s.ready || s.shutting_down.load(std::memory_order_acquire)) {
     return;
   }
-  // One back buffer present per engine frame, and RequestClear reopens the
-  // gate.
   if (s.frame_present_committed) {
     return;
   }
@@ -325,8 +234,6 @@ void Video::Present(GuestTexture *frontBuffer) {
     RebuildSwapChain(s);
   }
 
-  // Empty after a failed or skipped resize (minimized), and indexing it is a
-  // UAF.
   if (s.framebuffers.empty()) {
     AbandonFrame(s, lock);
     if (lock.owns_lock())
@@ -365,13 +272,8 @@ void Video::Present(GuestTexture *frontBuffer) {
   plume::RenderTexture *back = s.swap_chain->getTexture(texture_index);
   plume::RenderFramebuffer *back_fb = s.framebuffers[texture_index].get();
 
-  GuestTexture *chosen = nullptr;
-  GuestTexture *rt = SelectPresentSource(s, frontBuffer, chosen);
+  GuestTexture *rt = SelectPresentSource(s, frontBuffer);
 
-  // An MSAA rt must never reach the gamma blit: its descriptor is a Texture2DMS
-  // view, the blit shader samples a Texture2D. A correct frame ends on a
-  // resolved single-sample surface, so an MSAA one here is already wrong
-  // upstream, so skip the blit rather than crash the present.
   const bool have_rt_blit =
       rt && rt->texture && rt->descriptorIndex != kInvalidDescriptorIndex &&
       rt->sampleCount == plume::RenderSampleCount::COUNT_1;
@@ -385,9 +287,8 @@ void Video::Present(GuestTexture *frontBuffer) {
     return;
   }
 
-  // Reopens a closed list, so end() below always has one.
   BeginCommandList(s);
-  RecordPresentPass(s, rt, chosen, back, back_fb);
+  RecordPresentPass(s, rt, back, back_fb);
 
   const u32 cur = s.frame.load(std::memory_order_relaxed);
   FrameEnd(s.command_list);
@@ -396,12 +297,8 @@ void Video::Present(GuestTexture *frontBuffer) {
 
   const plume::RenderCommandList *lists[] = {s.command_lists[cur].get()};
   plume::RenderCommandSemaphore *waits[] = {s.acquire_semaphores[cur].get()};
-  // Indexed by the acquired swapchain image, not the frame-in-flight slot:
-  // see the render_semaphores declaration on VideoState.
   plume::RenderCommandSemaphore *signals[] = {
       s.render_semaphores[texture_index].get()};
-  // NOT the frame just submitted: AdvanceAndWaitReused waits the slot about to
-  // be reused, one frame old. That gap is the CPU/GPU overlap.
   {
     BD_CPU_ZONE("Submit");
     const auto t0 = Clock::now();
@@ -414,9 +311,6 @@ void Video::Present(GuestTexture *frontBuffer) {
   {
     BD_CPU_ZONE("PresentSwap");
     const auto t0 = Clock::now();
-    // A removed device fails Present first, and the fence wait below still
-    // returns (removal signals every fence), so without this the next D3D12
-    // call is the one that reports the loss.
     if (!s.swap_chain->present(texture_index, signals, 1)) {
       if (!CheckDeviceRemoved("swapchain present"))
         s.resize_requested.store(true, std::memory_order_release);
@@ -434,9 +328,6 @@ void Video::Present(GuestTexture *frontBuffer) {
   s.frame_present_committed = true;
   BD_FRAME_MARK();
   UpdateFrameStats();
-  // The reused slot's fence has signalled, so resources released kNumFrames ago
-  // can no longer be referenced by in-flight work. Drop the lock first, since
-  // DrainSlot re-acquires it per entry.
   lock.unlock();
   {
     BD_CPU_ZONE("DrainSlot");
@@ -530,8 +421,6 @@ void Video::PresentOverlayFrame() {
   s.command_list_open = false;
   const plume::RenderCommandList *lists[] = {s.command_lists[cur].get()};
   plume::RenderCommandSemaphore *waits[] = {s.acquire_semaphores[cur].get()};
-  // Indexed by the acquired swapchain image, not the frame-in-flight slot:
-  // see the render_semaphores declaration on VideoState.
   plume::RenderCommandSemaphore *signals[] = {
       s.render_semaphores[texture_index].get()};
   s.queue->executeCommandLists(lists, 1, waits, 1, signals, 1,
@@ -546,8 +435,6 @@ void Video::PresentOverlayFrame() {
   lock.unlock();
   DrainSlot(s, reclaimed);
   RecordBlankFrameSample();
-  // No PaceFrame: the installer tick scheduler paces, and sleeping here would
-  // only delay SDL event handling on the UI thread.
 }
 
 } // namespace bd::gpu

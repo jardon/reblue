@@ -17,7 +17,6 @@
 #include "engine/engine.h"
 #include "gpu/device.h"
 #include "gpu/host_heap.h"
-#include "gpu/surface_pool.h"
 
 namespace bd::gpu {
 
@@ -180,11 +179,6 @@ void RecordFrameSample(const PresentBreakdown &b) {
     g_mem_carry.heap_peak = hh.peak_allocated;
     g_mem_carry.heap_live = hh.live_count;
     g_mem_carry.heap_oom = hh.oom_count;
-    const auto ps = SurfacePool::GetStats();
-    g_mem_carry.surf_free = ps.free_count;
-    g_mem_carry.surf_hits = ps.hits;
-    g_mem_carry.surf_misses = ps.misses;
-    g_mem_carry.surf_parked_bytes = ps.parked_bytes;
     const auto vm = Video::MemoryUsage();
     g_mem_carry.vram_used = vm.used;
     g_mem_carry.vram_budget = vm.budget;
@@ -201,10 +195,6 @@ void RecordFrameSample(const PresentBreakdown &b) {
   s.heap_live = g_mem_carry.heap_live;
   s.heap_oom = g_mem_carry.heap_oom;
   s.sys_heap_bytes = g_mem_carry.sys_heap_bytes;
-  s.surf_free = g_mem_carry.surf_free;
-  s.surf_hits = g_mem_carry.surf_hits;
-  s.surf_misses = g_mem_carry.surf_misses;
-  s.surf_parked_bytes = g_mem_carry.surf_parked_bytes;
   s.vram_used = g_mem_carry.vram_used;
   s.vram_budget = g_mem_carry.vram_budget;
   s.state = CurrentSceneState();
