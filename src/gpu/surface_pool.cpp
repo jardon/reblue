@@ -504,9 +504,8 @@ GuestTexture *CreateFresh(u32 width, u32 height, u32 guest_format,
                         : plume::RenderTextureFlag::RENDER_TARGET;
   desc.multisampling.sampleCount =
       static_cast<plume::RenderSampleCounts>(sample_count);
-  // Force committed: shared heap placement leaves undefined contents that D3D12
-  // GBV fills with a neon-green debug pattern (see CreateTexture_hook).
-  desc.committed = true;
+  // Placed rather than committed, for the reason CreateTexture_hook gives.
+  desc.committed = false;
 
   auto *device = Video::HostDevice();
   if (device) {

@@ -130,16 +130,10 @@ bd::gpu::GuestTexture *D3DDevice_CreateTexture_hook(u32 width, u32 height,
   } else {
     desc.flags = plume::RenderTextureFlag::NONE;
   }
-  // Force committed only for RT/DS: shared heap placement leaves UNDEFINED
-  // contents D3D12 GBV fills neon-green (visible if sampled before drawn into).
-  // Sampled-only textures are populated before use, and forcing them committed
-  // gave per-texture dedicated heaps -> TDR during level load (thousands of
-  // small textures). Bitwise test (not equality): a depth cube now carries
-  // CUBE|DEPTH_TARGET and needs the same protection as a plain DEPTH_TARGET.
-  const bool is_rt_or_ds =
-      (desc.flags & (plume::RenderTextureFlag::RENDER_TARGET |
-                     plume::RenderTextureFlag::DEPTH_TARGET)) != 0;
-  desc.committed = is_rt_or_ds;
+  // Render and depth targets are placed rather than committed. A committed
+  // texture takes a D3D12 heap of its own, and that driver allocation is what
+  // the frame costs every time a surface is recreated at a new size.
+  desc.committed = false;
 
   // Set before the SRV block: BindTextureSRV reads viewDimension to pick the
   // SRV dimension. A cube must be TEXTURE_CUBE here or it builds a degenerate
