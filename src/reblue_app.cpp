@@ -1016,6 +1016,7 @@ void ReblueApp::OnShutdown() {
   // Only reached on early-init failure. A normal close runs the shutdown
   // sequence in OnWindowCloseRequested first.
   StopPreGuestPump();
+  bd::vfs::VFS::Get().Prefetch().Shutdown();
   // Normal closes detach through KeyboardInput::OnClosing. This covers the
   // early-failure path where that never fires. Detaching twice is safe.
   bd::platform::Keyboard().Detach();

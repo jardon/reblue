@@ -54,6 +54,7 @@ void VFS::Init(const std::filesystem::path &game_root,
   if (paths_.Game().empty())
     return;
   log_.Init(paths_.Game());
+  prefetch_.Init(paths_.Game());
   files_.Add("disc:packs", kPriorityShippedPack,
              ShippedPackMount::Scan(paths_.Game(), PackIndexPath(cache_root)));
 }

@@ -17,6 +17,7 @@
 #include "core/settings.h"
 #include "core/threading.h"
 #include "gpu/gpu.h"
+#include "vfs/vfs.h"
 
 #include <rex/logging.h>
 #include <rex/runtime.h>
@@ -101,6 +102,7 @@ void StopGuestThreads() {
 
   Stage("quiesce-renderer", [] { gpu::Video::BeginShutdown(); });
   Stage("perf-csv", [] { PerfCSVShutdown(); });
+  Stage("disc-prefetch", [] { vfs::VFS::Get().Prefetch().Shutdown(); });
   Stage("stop-guest-threads", [] { StopGuestThreads(); });
   Stage("flush-caches", [] { gpu::FlushPSOCapture(); });
   Stage("gpu-drain", [] { gpu::Video::Shutdown(UiPump()); });
@@ -170,6 +172,7 @@ void QuiesceForExit() {
   ArmWatchdog(0);
   Stage("quiesce-renderer", [] { gpu::Video::BeginShutdown(); });
   Stage("perf-csv", [] { PerfCSVShutdown(); });
+  Stage("disc-prefetch", [] { vfs::VFS::Get().Prefetch().Shutdown(); });
   Stage("stop-guest-threads", [] { StopGuestThreads(); });
   Stage("gpu-drain", [] { gpu::Video::Shutdown(UiPump()); });
   g_finished.store(true, std::memory_order_release);
