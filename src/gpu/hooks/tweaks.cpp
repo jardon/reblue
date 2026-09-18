@@ -66,6 +66,26 @@ void ScaleTargetDims(PPCRegister &w, PPCRegister &h, f64 s) {
   w.u32 = std::max(1u, static_cast<u32>(w.u32 * s));
   h.u32 = std::max(1u, static_cast<u32>(h.u32 * s));
 }
+
+// bdRenderViewSubmit runs once per camera in the frame's list and each camera
+// fits the shadow map to its own frustum, so the memo is keyed by view. A
+// single shared tick would leave every camera after the first unshadowed.
+std::unordered_map<u32, u64> g_sunShadowTicks;
+std::unordered_map<u32, u64> g_cubeShadowTicks;
+
+bool ShadowPassAlreadyRanThisTick(std::unordered_map<u32, u64> &ticks,
+                                  u32 view) {
+  if (!bd::gpu::Settings::Get().ShadowPerTick())
+    return false;
+  const u64 tick = bd::engine::TickCount();
+  const auto [it, inserted] = ticks.try_emplace(view, tick);
+  if (inserted)
+    return false;
+  if (it->second == tick)
+    return true;
+  it->second = tick;
+  return false;
+}
 } // namespace
 
 namespace bd::gpu {
@@ -160,6 +180,14 @@ void bdShadowCoverageScaleHook(PPCRegister &f1) {
   const f64 cov = bd::gpu::ShadowCoverageScale();
   if (cov != 1.0)
     f1.f64 *= cov;
+}
+
+bool bdSunShadowPassTickGateHook(PPCRegister &view) {
+  return ShadowPassAlreadyRanThisTick(g_sunShadowTicks, view.u32);
+}
+
+bool bdCubeShadowPassTickGateHook(PPCRegister &view) {
+  return ShadowPassAlreadyRanThisTick(g_cubeShadowTicks, view.u32);
 }
 
 // The composite blur scale c27.y, stored at 4(r11) just above. The composite

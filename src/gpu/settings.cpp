@@ -29,6 +29,7 @@ REXCVAR_DECLARE(bool, bd_ntsc_filter);
 REXCVAR_DECLARE(double, bd_dof_strength);
 REXCVAR_DECLARE(i32, bd_shadow_dimension);
 REXCVAR_DECLARE(double, bd_shadow_distance);
+REXCVAR_DECLARE(bool, bd_shadow_per_tick);
 REXCVAR_DECLARE(i32, bd_aspect_ratio);
 REXCVAR_DECLARE(i32, bd_fov_offset);
 REXCVAR_DECLARE(bool, bd_vsync);
@@ -36,6 +37,11 @@ REXCVAR_DECLARE(bool, bd_vsync);
 REXCVAR_DEFINE_BOOL(bd_pso_precache, true, kCvarGroup,
                     "Precompile pipelines during loads instead of at first "
                     "draw.");
+
+REXCVAR_DEFINE_BOOL(bd_shadow_per_tick, true, kCvarGroup,
+                    "Render the sun and cube shadow maps once per 30 Hz logic "
+                    "tick instead of every displayed frame. Between ticks they "
+                    "would be redrawn identical.");
 
 REXCVAR_DEFINE_BOOL(bd_geometry_gpu_upload, true, kCvarGroup,
                     "Place static geometry in the GPU_UPLOAD heap when the "
@@ -200,6 +206,9 @@ void Settings::AdoptDOFStrength() {
 void Settings::AdoptShadowDistance() {
   shadowDistance_ = REXCVAR_GET(bd_shadow_distance);
 }
+void Settings::AdoptShadowPerTick() {
+  shadowPerTick_ = REXCVAR_GET(bd_shadow_per_tick);
+}
 void Settings::AdoptVsync() { vsync_ = REXCVAR_GET(bd_vsync); }
 void Settings::AdoptAspectRatio() {
   aspectRatio_ = REXCVAR_GET(bd_aspect_ratio);
@@ -338,6 +347,7 @@ void Settings::AdoptCvars() {
   AdoptNTSCFilter();
   AdoptDOFStrength();
   AdoptShadowDistance();
+  AdoptShadowPerTick();
   AdoptVsync();
   AdoptAspectRatio();
   AdoptFOVOffset();
@@ -366,6 +376,7 @@ void Settings::Init() {
   reg("bd_ntsc_filter", &Settings::AdoptNTSCFilter);
   reg("bd_dof_strength", &Settings::AdoptDOFStrength);
   reg("bd_shadow_distance", &Settings::AdoptShadowDistance);
+  reg("bd_shadow_per_tick", &Settings::AdoptShadowPerTick);
   reg("bd_vsync", &Settings::AdoptVsync);
   reg("bd_aspect_ratio", &Settings::AdoptAspectRatio);
   reg("bd_fov_offset", &Settings::AdoptFOVOffset);
