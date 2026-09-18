@@ -103,12 +103,28 @@ void PerfOverlay::DrawKpiStrip(ImGuiIO &io) {
     y += line_h;
   };
 
-  put(std::format("{:.1f} fps   {:.2f} ms", a.fps, a.avg_ms), kText);
+  const bd::PerfSample &cur = samples[n - 1];
+  if (fps_window_start_index_ > cur.index || cur.time_s < fps_window_start_s_) {
+    fps_window_start_s_ = cur.time_s;
+    fps_window_start_index_ = cur.index;
+    fps_shown_ = a.fps;
+    fps_ms_shown_ = a.avg_ms;
+  }
+  const f64 window_s = cur.time_s - fps_window_start_s_;
+  if (window_s >= 1.0) {
+    const u64 frames = cur.index - fps_window_start_index_;
+    fps_shown_ = f64(frames) / window_s;
+    fps_ms_shown_ = frames ? window_s * 1000.0 / f64(frames) : 0.0;
+    fps_window_start_s_ = cur.time_s;
+    fps_window_start_index_ = cur.index;
+  }
+
+  put(std::format("{:.1f} fps   {:.2f} ms", fps_shown_, fps_ms_shown_), kText);
   put(bd::PerfBoundName(bound), BoundColor(bound));
+  put(std::format("avg {:.1f} fps   {:.2f} ms", a.fps, a.avg_ms), kDim);
   put(std::format("1% low {:.1f}   0.1% low {:.1f}", a.low1_fps, a.low01_fps),
       kDim);
   put(std::format("max {:.1f} ms   {} hitch", a.max_ms, a.hitches), kDim);
-  const bd::PerfSample &cur = samples[n - 1];
   put(std::format("{} draws   {} pso   {} fb", cur.draws, cur.pso_switches,
                   cur.fb_binds),
       kDim);

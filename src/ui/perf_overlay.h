@@ -9,6 +9,7 @@
  */
 #pragma once
 
+#include <rex/types.h>
 #include <rex/ui/imgui_dialog.h>
 
 struct ImGuiIO;
@@ -50,6 +51,13 @@ private:
   void DrawGraphs(ImGuiIO &io);
 
   OverlayStage stage_ = OverlayStage::Off;
+
+  // The headline is a count of frames over a whole second, latched once that
+  // second is up. A per-frame rate changes faster than it can be read.
+  f64 fps_window_start_s_ = 0.0;
+  u64 fps_window_start_index_ = ~0ull;
+  f64 fps_shown_ = 0.0;
+  f64 fps_ms_shown_ = 0.0;
 };
 
 } // namespace bd::ui
