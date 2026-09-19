@@ -149,17 +149,3 @@ address = 0x82217600
 name = "bdDOFIntermediateScaleHook"
 registers = ["r28", "r26"]
 after_instruction = false
-
-[[midasm_hook]]
-address = 0x821851FC
-name = "bdSunShadowPassTickGateHook"
-registers = ["r18"]
-after_instruction = false
-jump_address_on_true = 0x821852CC
-
-[[midasm_hook]]
-address = 0x821852F8
-name = "bdCubeShadowPassTickGateHook"
-registers = ["r18"]
-after_instruction = false
-jump_address_on_true = 0x821854CC

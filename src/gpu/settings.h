@@ -159,8 +159,6 @@ public:
   // leave texel density wrong for as long as the coverage change is visible.
   bool SetShadowQuality(f64 distance, i32 dimension);
 
-  bool ShadowPerTick() const { return shadowPerTick_; }
-
   bool Vsync() const { return vsync_; }
   bool SetVsync(bool v);
 
@@ -221,7 +219,6 @@ private:
   void AdoptNTSCFilter();
   void AdoptDOFStrength();
   void AdoptShadowDistance();
-  void AdoptShadowPerTick();
   void AdoptVsync();
   void AdoptAspectRatio();
   void AdoptFOVOffset();
@@ -249,7 +246,6 @@ private:
   f64 dofStrength_ = 1.0;
   i32 shadowDimension_ = kDefaultSettings.shadowDimension;
   f64 shadowDistance_ = kDefaultSettings.shadowDistance;
-  bool shadowPerTick_ = true;
   i32 aspectRatio_ = static_cast<i32>(AspectMode::Auto);
   i32 fovOffset_ = 0;
   bool vsync_ = true;
